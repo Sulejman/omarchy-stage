@@ -59,7 +59,7 @@ fi
 
 say "Building the miniature-thumbnails plugin"
 if ! command -v make >/dev/null || ! command -v g++ >/dev/null; then
-  echo "  skipped: needs make and g++ (sudo pacman -S --needed base-devel)."
+  echo "  skipped: needs make and g++ (the base-devel package group)."
   echo "  Stage works without it; thumbnails are then plain small windows."
 elif ! pkg-config --exists hyprland 2>/dev/null; then
   echo "  skipped: Hyprland headers not found by pkg-config."

@@ -124,6 +124,15 @@ line and saved state, then reloads Hyprland.
 - Check for key conflicts with your own bindings:
   `omarchy menu keybindings --print`.
 
+## Inspiration
+
+Stage was inspired by Scott Jenson's talk
+[*Are we really going to use the same Desktop UX forever?*](https://www.youtube.com/watch?v=V7AfAcQwLW0)
+(The KDE Community), which questions whether desktop window management has
+to stay the way it is.
+
+[![Scott Jenson: Are we really going to use the same Desktop UX forever?](https://img.youtube.com/vi/V7AfAcQwLW0/hqdefault.jpg)](https://www.youtube.com/watch?v=V7AfAcQwLW0)
+
 ## License
 
 MIT

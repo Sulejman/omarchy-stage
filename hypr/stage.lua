@@ -22,6 +22,9 @@
 -- stage -> dwindle. The dwindle/scrolling steps are still Omarchy's own
 -- omarchy-hyprland-workspace-layout-toggle; this file only adds the stage step.
 --
+-- Inspired by Scott Jenson's talk "Are we really going to use the same Desktop
+-- UX forever?" (https://www.youtube.com/watch?v=V7AfAcQwLW0).
+--
 -- From https://github.com/Sulejman/omarchy-stage. As an Omarchy plugin it is
 -- loaded at runtime and removed with `omarchy plugin remove
 -- io.github.sulejman.stage`. A manual install (install.sh) is removed with
