@@ -22,12 +22,21 @@
 -- stage -> dwindle. The dwindle/scrolling steps are still Omarchy's own
 -- omarchy-hyprland-workspace-layout-toggle; this file only adds the stage step.
 --
--- Installed by https://github.com/Sulejman/omarchy-stage. Remove it with that
--- repo's uninstall.sh, or by hand:
+-- From https://github.com/Sulejman/omarchy-stage. As an Omarchy plugin it is
+-- loaded at runtime and removed with `omarchy plugin remove
+-- io.github.sulejman.stage`. A manual install (install.sh) is removed with
+-- uninstall.sh, or by hand:
 --   1. delete the `require("hypr.stage")` line in ~/.config/hypr/hyprland.lua
 --   2. rm ~/.config/hypr/stage.lua
 --   3. rm -r ~/.local/state/hypr-stage ~/.config/hypr/stagethumbs
 --   4. hyprctl plugin unload ~/.config/hypr/stagethumbs/stagethumbs.so (or log out)
+
+-- Loaded once per Hyprland Lua state. A config reload starts a fresh state,
+-- so this only stops a second copy (e.g. both the Omarchy plugin and a manual
+-- `require`) from registering everything twice.
+if _G.omarchy_stage then
+  return _G.omarchy_stage
+end
 
 local cfg = {
   center_aspect = 1.6, -- preferred width:height of the middle window...
@@ -44,6 +53,9 @@ local cfg = {
 
 local LAYOUT = "lua:stage"
 local OMARCHY_TOGGLE = "omarchy-hyprland-workspace-layout-toggle"
+-- Nerd Font md-view_carousel_outline: one window in the middle, others at the
+-- sides. Shown like the icons on Omarchy's dwindle/scrolling notifications.
+local STAGE_ICON = "\u{F1486}"
 local state_dir = (os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/state")) .. "/hypr-stage"
 local state_file = state_dir .. "/workspaces"
 local error_file = state_dir .. "/errors.log"
@@ -330,11 +342,18 @@ end
 -- listed and unloads what isn't. Registering it conditionally (e.g. "only if
 -- not loaded yet") makes it flip between loaded and unloaded forever, which
 -- freezes Hyprland.
-local plugin_so = os.getenv("HOME") .. "/.config/hypr/stagethumbs/stagethumbs.so"
+--
+-- When the Omarchy plugin loads this file at runtime (hyprctl eval), it sets
+-- stage_runtime and loads the .so itself with `hyprctl plugin load`, which
+-- survives config reloads; hl.plugin.load only takes effect during a config run.
+local here = debug.getinfo(1, "S").source:match("^@(.*/)") or (os.getenv("HOME") .. "/.config/hypr/")
+local plugin_so = here .. "stagethumbs/stagethumbs.so"
 local built = io.open(plugin_so, "r")
 if built then
   built:close()
-  hl.plugin.load(plugin_so)
+  if not _G.stage_runtime then
+    hl.plugin.load(plugin_so)
+  end
 end
 
 local function show_full(target)
@@ -605,7 +624,7 @@ function M.cycle()
     write_state(set)
     hl.workspace_rule({ workspace = key, layout = LAYOUT })
     update_thumbs(ws)
-    hl.exec_cmd(o.notify("Workspace layout set to stage"))
+    hl.exec_cmd("omarchy-notification-send -g " .. STAGE_ICON .. " 'Workspace layout set to stage'")
     return
   end
 
@@ -760,4 +779,5 @@ for key, dir in pairs({ LEFT = "l", RIGHT = "r", UP = "u", DOWN = "d" }) do
   o.bind("SUPER + " .. key, "Focus on " .. name .. " window", guarded(M.focus(dir)))
 end
 
+_G.omarchy_stage = M
 return M

@@ -19,6 +19,8 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 command -v omarchy >/dev/null || die "Omarchy not found. Stage uses Omarchy's bind helpers and layout toggle."
 [[ -f $CONFIG ]] || die "$CONFIG not found. Stage needs Hyprland's Lua config (Hyprland 0.56+)."
+[[ -d $HOME/.config/omarchy/plugins/io.github.sulejman.stage ]] &&
+  die "Stage is installed as an Omarchy plugin already. Use one or the other: omarchy plugin remove io.github.sulejman.stage"
 
 version=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }' || true)
 if [[ -n $version ]] && [[ $(printf '%s\n0.56\n' "${version%%-*}" | sort -V | head -1) != 0.56 ]]; then

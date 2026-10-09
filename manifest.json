@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.sulejman.stage",
+  "name": "Stage",
+  "version": "1.0.0",
+  "author": "Sulejman Sarajlija",
+  "license": "MIT",
+  "description": "Stage Manager-style layout for Hyprland: one window in the middle, the rest as thumbnails on both sides. Adds a stage step to SUPER+L.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

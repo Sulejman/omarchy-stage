@@ -38,9 +38,31 @@ remembered across reloads and logins.
 
 - Omarchy with Hyprland **0.56 or newer** (stage is a Hyprland Lua layout)
 - Optional, for real miniatures: `base-devel` (`make`, `g++`). Hyprland's
-  headers ship with the `hyprland` package.
+  headers ship with the `hyprland` package. Without them, stage still works
+  and thumbnails are plain small windows.
 
 ## Install
+
+As an Omarchy plugin:
+
+```bash
+omarchy plugin add https://github.com/Sulejman/omarchy-stage --enable
+```
+
+Then press `SUPER + L` until the workspace switches to stage.
+
+The plugin doesn't edit your Hyprland config. While it's enabled, it loads the
+layout into the running Hyprland with `hyprctl eval`, and loads it again after
+every config reload. On first start, and whenever the `hyprland` package
+version changes, it builds the miniature-thumbnails plugin in its own folder
+(a few seconds) and loads it with `hyprctl plugin load`.
+
+Update with `omarchy plugin update io.github.sulejman.stage`.
+
+### Manual install (alternative)
+
+If you'd rather have stage in your Hyprland config than run it from the
+shell, use the installer instead of the plugin, not both:
 
 ```bash
 git clone https://github.com/Sulejman/omarchy-stage.git
@@ -48,50 +70,51 @@ cd omarchy-stage
 ./install.sh
 ```
 
-The installer:
-
-1. copies `stage.lua`, `stage-maintain.sh` and the `stagethumbs/` plugin source
-   into `~/.config/hypr/` (any file it would change is backed up as `*.bak.<time>`),
-2. adds `require("hypr.stage")` to `~/.config/hypr/hyprland.lua`,
-3. installs two Omarchy hooks (`post-update`, `post-boot`),
-4. builds the thumbnails plugin and reloads Hyprland.
-
-To update: `git pull && ./install.sh`.
+It copies `stage.lua`, `stage-maintain.sh` and the `stagethumbs/` source into
+`~/.config/hypr/` (any file it would change is backed up as `*.bak.<time>`),
+adds `require("hypr.stage")` to `~/.config/hypr/hyprland.lua`, installs two
+Omarchy hooks that rebuild the thumbnails plugin after updates, then builds it
+and reloads Hyprland. Update with `git pull && ./install.sh`.
 
 ## Miniature thumbnails
 
-Without the plugin, a thumbnail is the real window resized to a small box, so
-apps re-lay themselves out for that size. The optional `stagethumbs` Hyprland
-plugin instead keeps telling the app it has its full middle-of-screen size and
-draws that content scaled down. Clicks are scaled too, so they land where they
-appear.
+Without the thumbnails plugin, a thumbnail is the real window resized to a
+small box, so apps re-lay themselves out for that size. The optional
+`stagethumbs` Hyprland plugin instead keeps telling the app it has its full
+middle-of-screen size and draws that content scaled down. Clicks are scaled
+too, so they land where they appear.
 
 Hyprland plugins must be built against the exact Hyprland version that's
-running. The hooks take care of that. After `omarchy update`, and at login,
-`stage-maintain.sh` rebuilds the plugin when the `hyprland` package version
-has changed. If a build fails, the plugin is disabled (stage keeps working
-with plain thumbnails), you get a notification, and the log is in
-`~/.config/hypr/stagethumbs/build.log`.
-
-The same script puts the `require` line back if `omarchy refresh hyprland`
-or an update resets `hyprland.lua`.
+running, so both install methods rebuild it when the `hyprland` package
+changes. If a build fails, you get a notification, stage keeps working with
+plain thumbnails, and the log is in `stagethumbs/build.log` (inside the plugin
+folder, or `~/.config/hypr/stagethumbs/` for a manual install).
 
 ## Tuning
 
-The `cfg` table at the top of `~/.config/hypr/stage.lua` holds the knobs:
-middle window aspect and min/max share of the screen, thumbnail column width,
-how quickly outer columns shrink, and thumbnail opacity. Hyprland reloads on save.
-
-Re-running `install.sh` overwrites the file (your version is backed up first).
+The `cfg` table at the top of `hypr/stage.lua` holds the knobs: middle window
+aspect and min/max share of the screen, thumbnail column width, how quickly
+outer columns shrink, and thumbnail opacity. With the plugin, edit
+`~/.config/omarchy/plugins/io.github.sulejman.stage/hypr/stage.lua` and run
+`hyprctl reload`. With a manual install, edit `~/.config/hypr/stage.lua`
+(Hyprland reloads on save). Updates replace the file, so keep a note of your
+changes.
 
 ## Uninstall
 
+Plugin:
+
 ```bash
-./uninstall.sh
+omarchy plugin remove io.github.sulejman.stage
 ```
 
-This removes the files, hooks, `require` line and saved state, then reloads
-Hyprland. Stage workspaces fall back to the default layout.
+Disabling or removing it reloads Hyprland, so stage workspaces fall back to
+the default layout right away. The thumbnails plugin stays loaded but idle
+until you log out. Saved stage state is in `~/.local/state/hypr-stage`.
+Delete that folder too if you won't reinstall.
+
+Manual install: run `./uninstall.sh`. It removes the files, hooks, `require`
+line and saved state, then reloads Hyprland.
 
 ## Troubleshooting
 
