@@ -1,4 +1,4 @@
-# Stage for Omarchy
+# Stage Layout for Omarchy
 
 A Stage Manager-style tiling layout for [Omarchy](https://omarchy.org/) on Hyprland.
 
