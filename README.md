@@ -11,7 +11,11 @@ your peripheral vision.
 Thumbnails keep their spot. Bringing a window into the middle swaps it with
 the current middle window, and nothing else moves.
 
-<!-- TODO: preview.png -->
+![Stage: a browser in the middle, other windows as thumbnails on both sides](docs/stage.png)
+
+| Any window can take the middle | Narrow the middle and more, smaller columns appear |
+|---|---|
+| ![An image viewer in the middle](docs/stage-image.png) | ![A narrow editor in the middle with two thumbnail columns per side](docs/stage-narrow.png) |
 
 ## Keys
 
