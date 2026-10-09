@@ -1,0 +1,4 @@
+#!/bin/bash
+# Keep the stage layout working after omarchy update (see the script).
+[[ -x ~/.config/hypr/stage-maintain.sh ]] && ~/.config/hypr/stage-maintain.sh update
+exit 0
