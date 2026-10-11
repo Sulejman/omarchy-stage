@@ -8,7 +8,10 @@
 //   - scales pointer coordinates so clicks land where they appear,
 //   - redraws the whole thumbnail whenever the app updates,
 //   - tells the layout which thumbnail the pointer is over, so it can
-//     highlight it (Hyprland has no hover event for Lua).
+//     highlight it (Hyprland has no hover event for Lua),
+//   - tells the layout when ALT is released after Alt+Tab, so its switcher
+//     can open the highlighted window (a release bind would be cancelled by
+//     the TAB presses in between).
 //
 // It only acts on tiled, non-fullscreen windows on a workspace whose layout
 // is lua:stage, so a window moved elsewhere goes back to normal by itself.
@@ -29,6 +32,9 @@
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon.h>
 
 extern "C" {
 #include <lua.h>
@@ -57,6 +63,11 @@ static CFunctionHook*                          g_hkDamage     = nullptr;
 // thumbnail under the pointer (0: none), and the pending report of it to Lua
 static uintptr_t                               g_hovered = 0;
 static UP<SEventLoopDoLaterLock>               g_hoverReport;
+
+// set by watch_alt(): report the next ALT release to the switcher
+static bool                                    g_watchAlt = false;
+static UP<SEventLoopDoLaterLock>               g_altReport;
+static CHyprSignalListener                     g_keyListener;
 
 // The full size of a window currently shown as a thumbnail, if it is one.
 static std::optional<Vector2D> fullSize(const CWindow* w) {
@@ -211,6 +222,28 @@ static void hkSendPointerMotion(CSeatManager* self, uint32_t timeMs, const Vecto
     ((sendPointerMotionFn)g_hkMotion->m_original)(self, timeMs, toFull(self->m_state.pointerFocus.lock(), local));
 }
 
+// --- keyboard --------------------------------------------------------------
+
+// ALT by hardware key, or by what the keymap makes of the key (remapped keys,
+// virtual keyboards with their own keymaps).
+static bool isAlt(uint32_t keycode) {
+    if (keycode == KEY_LEFTALT || keycode == KEY_RIGHTALT)
+        return true;
+    const auto keyboard = g_pSeatManager->m_keyboard.lock();
+    if (!keyboard || !keyboard->m_xkbStaticState)
+        return false;
+    const auto sym = xkb_state_key_get_one_sym(keyboard->m_xkbStaticState, keycode + 8);
+    return sym == XKB_KEY_Alt_L || sym == XKB_KEY_Alt_R;
+}
+
+static void onKey(const IKeyboard::SKeyEvent& e) {
+    if (!g_watchAlt || e.state != WL_KEYBOARD_KEY_STATE_RELEASED || !isAlt(e.keycode))
+        return;
+    g_watchAlt  = false;
+    g_altReport = g_pEventLoopManager->doLaterLock(
+        [] { HyprlandAPI::invokeHyprctlCommand("eval", "local s = _G.omarchy_stage; if s and s.tab_commit then s.tab_commit() end"); });
+}
+
 // --- damage ----------------------------------------------------------------
 
 // Damage arrives in the app's full-size coordinates; just redraw the whole
@@ -248,6 +281,12 @@ static int luaClear(lua_State* L) {
     g_full.erase(addr);
     if (addr == g_hovered)
         reportHover(0);
+    return 0;
+}
+
+// watch_alt(): call _G.omarchy_stage.tab_commit() when ALT is next released
+static int luaWatchAlt(lua_State* L) {
+    g_watchAlt = true;
     return 0;
 }
 
@@ -293,17 +332,22 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "set", luaSet);
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "clear", luaClear);
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "loaded", luaLoaded);
+    HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "watch_alt", luaWatchAlt);
 
-    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.2"};
+    g_keyListener = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
+
+    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.3"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    g_hoverReport.reset(); // drop a pending report before our code is unloaded
+    g_keyListener.reset();
+    g_hoverReport.reset(); // drop pending reports before our code is unloaded
+    g_altReport.reset();
     g_full.clear();
     for (auto* h : {g_hkReportSize, g_hkUV, g_hkTexBox, g_hkFocus, g_hkMotion, g_hkDamage}) {
         if (h)
             HyprlandAPI::removeFunctionHook(PHANDLE, h);
     }
-    for (const char* fn : {"set", "clear", "loaded"})
+    for (const char* fn : {"set", "clear", "loaded", "watch_alt"})
         HyprlandAPI::removeLuaFunction(PHANDLE, "stagethumbs", fn);
 }

@@ -762,8 +762,12 @@ end
 -- column top to bottom, then the outer ones), then the right side the same
 -- way. SHIFT goes backwards.
 -- Releasing ALT opens the highlighted window into the middle (one swap).
+-- A release bind can't see that (the TAB presses in between cancel it), so
+-- the stagethumbs plugin watches for the ALT release and calls tab_commit.
+-- Without the plugin, the window opens shortly after the last TAB instead.
 -- Elsewhere, Omarchy's own Alt+Tab.
 local switching = nil -- { ws = workspace id, p = position in the order } while ALT is held
+local switch_gen = 0 -- for the no-plugin fallback timer
 
 -- Slot indices in switcher order. Slots alternate sides (2 left, 3 right,
 -- 4 left, ...) and each side fills its inner column first.
@@ -813,8 +817,21 @@ function M.tab(step)
         navigating = true
         hl.dispatch(hl.dsp.focus({ window = w }))
         navigating = false
-        return
+        break
       end
+    end
+
+    local plugin = thumbs()
+    if plugin and plugin.watch_alt then
+      plugin.watch_alt()
+    else
+      switch_gen = switch_gen + 1
+      local gen = switch_gen
+      hl.timer(guarded(function()
+        if gen == switch_gen then
+          M.tab_commit()
+        end
+      end), { timeout = 800, type = "oneshot" })
     end
   end
 end
@@ -894,16 +911,6 @@ hl.unbind("ALT + TAB")
 hl.unbind("ALT + SHIFT + TAB")
 o.bind("ALT + TAB", "Focus on next window", guarded(M.tab(1)))
 o.bind("ALT + SHIFT + TAB", "Focus on previous window", guarded(M.tab(-1)))
--- Releasing either ALT (with or without SHIFT still down) ends the switcher.
--- Bound with and without the modifiers, since whether ALT still counts as
--- held at its own release isn't something to rely on; tab_commit only acts
--- once. non_consuming: apps still see the key, so ALT works as usual.
-for _, key in ipairs({ "Alt_L", "Alt_R" }) do
-  for _, mods in ipairs({ "", "ALT + ", "ALT + SHIFT + " }) do
-    o.bind(mods .. key, "Stage: open the window picked with Alt+Tab", guarded(M.tab_commit),
-      { release = true, non_consuming = true, ignore_mods = true })
-  end
-end
 
 for key, dir in pairs({ LEFT = "l", RIGHT = "r", UP = "u", DOWN = "d" }) do
   local name = ({ l = "left", r = "right", u = "above", d = "below" })[dir]
