@@ -8,8 +8,8 @@
 -- Thumbnails keep their spot. Bringing a window into the middle only swaps
 -- it with the current middle window; nothing else moves.
 --   click a thumbnail      swap it into the middle
---   ALT + TAB              next thumbnail in screen order, inner columns
---   ALT + SHIFT + TAB      first; repeated presses visit them all
+--   ALT + TAB              hold ALT, tap TAB to move the highlight across the
+--   ALT + SHIFT + TAB      thumbnails (inner first); release ALT to open it
 --   SUPER + arrows         move focus without moving anything (you can type
 --                          into a focused thumbnail)
 --   SUPER + Z              swap the focused thumbnail into the middle
@@ -618,9 +618,6 @@ end
 -- Set while stage navigation moves focus, so that focus isn't a promotion.
 local navigating = false
 
--- workspace id -> slot the next Alt+Tab swaps with (see M.tab)
-local tab_next = {}
-
 hl.on("window.active", guarded(function(window, reason)
   if navigating or not window or not window.stable_id or not DELIBERATE[reason] then
     return
@@ -629,7 +626,6 @@ hl.on("window.active", guarded(function(window, reason)
     return
   end
   swap_and_flash(window.workspace, slots_for(window.workspace.id), window.stable_id)
-  tab_next[window.workspace.id] = nil
   relayout_soon()
 end))
 
@@ -673,7 +669,6 @@ function M.promote()
   local ws = stage_focused()
   if w and ws and w.stable_id then
     swap_and_flash(ws, slots_for(ws.id), w.stable_id)
-    tab_next[ws.id] = nil
     relayout_soon()
   end
 end
@@ -760,14 +755,14 @@ function M.focus(dir)
   end
 end
 
--- Alt+Tab on a stage workspace steps through the thumbnails in their screen
--- order: inner columns first (alternating left and right, top to bottom),
--- then the outer ones. Each press swaps only two windows: the middle one and
--- the thumbnail at the next position. Repeated presses visit every window
--- and the next press after that brings back the one you started from;
--- Alt+Shift+Tab steps back (one press undoes the last Alt+Tab). Any other
--- swap (click, SUPER + Z, a new window) starts the walk over.
+-- Alt+Tab on a stage workspace is a switcher: while ALT is held, each TAB
+-- moves the highlight (keyboard focus, which gives the thumbnail its border)
+-- to the next thumbnail in screen order: inner columns first, alternating
+-- left and right, top to bottom, then the outer ones. SHIFT goes backwards.
+-- Releasing ALT opens the highlighted window into the middle (one swap).
 -- Elsewhere, Omarchy's own Alt+Tab.
+local switching = nil -- { ws = workspace id, k = highlighted slot } while ALT is held
+
 function M.tab(step)
   return function()
     local ws = stage_focused()
@@ -786,36 +781,40 @@ function M.tab(step)
       return
     end
 
-    -- tab_next[ws] is the slot the next forward press swaps with.
-    local k = math.min(math.max(tab_next[ws.id] or 2, 2), n + 1)
-    if step > 0 then
-      if k > n then
-        k = 2
-      end
-      tab_next[ws.id] = k + 1
-    else
-      k = k - 1
-      if k < 2 then
-        k = n
-      end
-      tab_next[ws.id] = k
+    if not switching or switching.ws ~= ws.id then
+      switching = { ws = ws.id, k = step > 0 and 1 or n + 1 }
     end
+    local k = switching.k + step
+    if k > n then
+      k = 2
+    elseif k < 2 then
+      k = n
+    end
+    switching.k = k
 
-    local target_id = list[k]
-    local target
     for _, w in ipairs(windows) do
-      if w.stable_id == target_id then
-        target = w
+      if w.stable_id == list[k] then
+        navigating = true
+        hl.dispatch(hl.dsp.focus({ window = w }))
+        navigating = false
+        return
       end
     end
-    if not target then
-      return
-    end
+  end
+end
 
-    swap_and_flash(ws, list, target_id)
-    navigating = true
-    hl.dispatch(hl.dsp.focus({ window = target }))
-    navigating = false
+-- ALT released: open the highlighted thumbnail.
+function M.tab_commit()
+  local sw = switching
+  switching = nil
+  local ws = sw and stage_focused()
+  if not ws or ws.id ~= sw.ws then
+    return
+  end
+  local w = hl.get_active_window()
+  local list = slots_for(ws.id)
+  if w and w.stable_id and list[1] ~= w.stable_id then
+    swap_and_flash(ws, list, w.stable_id)
     relayout_soon()
   end
 end
@@ -879,6 +878,16 @@ hl.unbind("ALT + TAB")
 hl.unbind("ALT + SHIFT + TAB")
 o.bind("ALT + TAB", "Focus on next window", guarded(M.tab(1)))
 o.bind("ALT + SHIFT + TAB", "Focus on previous window", guarded(M.tab(-1)))
+-- Releasing either ALT (with or without SHIFT still down) ends the switcher.
+-- Bound with and without the modifiers, since whether ALT still counts as
+-- held at its own release isn't something to rely on; tab_commit only acts
+-- once. non_consuming: apps still see the key, so ALT works as usual.
+for _, key in ipairs({ "Alt_L", "Alt_R" }) do
+  for _, mods in ipairs({ "", "ALT + ", "ALT + SHIFT + " }) do
+    o.bind(mods .. key, "Stage: open the window picked with Alt+Tab", guarded(M.tab_commit),
+      { release = true, non_consuming = true, ignore_mods = true })
+  end
+end
 
 for key, dir in pairs({ LEFT = "l", RIGHT = "r", UP = "u", DOWN = "d" }) do
   local name = ({ l = "left", r = "right", u = "above", d = "below" })[dir]
