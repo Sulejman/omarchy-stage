@@ -8,8 +8,8 @@
 -- Thumbnails keep their spot. Bringing a window into the middle only swaps
 -- it with the current middle window; nothing else moves.
 --   click a thumbnail      swap it into the middle
---   ALT + TAB              next window in a fixed order (the order they
---   ALT + SHIFT + TAB      were opened), so repeated presses visit them all
+--   ALT + TAB              next thumbnail in screen order, inner columns
+--   ALT + SHIFT + TAB      first; repeated presses visit them all
 --   SUPER + arrows         move focus without moving anything (you can type
 --                          into a focused thumbnail)
 --   SUPER + Z              swap the focused thumbnail into the middle
@@ -44,6 +44,7 @@ local cfg = {
   center_aspect = 1.6, -- preferred width:height of the middle window...
   center_min = 0.40, -- ...but never less than this share of the screen width
   center_max = 0.64, -- ...and never more
+  decay = 0.75, -- each thumbnail column further out is this much narrower
   center_step_min = 0.25, -- the middle window can be resized between these shares of the width
   center_step_max = 0.92,
 
@@ -103,7 +104,8 @@ local function index_of(list, value)
   end
 end
 
--- Alt+Tab order: the order windows were opened in (stable ids only grow).
+-- Opening order (stable ids only grow): who takes the middle when the middle
+-- window closes, and the slot order when a workspace is first seen.
 local function sequence(list)
   local seq = {}
   for i, id in ipairs(list) do
@@ -111,15 +113,6 @@ local function sequence(list)
   end
   table.sort(seq)
   return seq
-end
-
-local function next_in_sequence(list, id, step)
-  local seq = sequence(list)
-  local i = index_of(seq, id)
-  if not i or #seq == 0 then
-    return seq[1]
-  end
-  return seq[(i - 1 + step) % #seq + 1]
 end
 
 -- Bring the window with this id into the middle by swapping it with the
@@ -255,11 +248,12 @@ local function side_geometry(area, ws_id)
 end
 
 -- Lay out one side's thumbnails, shaped like the middle window (so they are
--- true miniatures of it). Try 1, 2, 3, ... columns and keep the count that
--- gives the biggest thumbnails (fewer columns on a tie): a few windows get a
--- single column of big thumbnails that uses the full height, and more columns
--- only appear once a column would get too crowded. Inner columns fill first,
--- top to bottom, and each column is centred vertically.
+-- true miniatures of it). Columns get smaller going outward (`decay`), and
+-- inner columns fill first, top to bottom; each column is centred vertically.
+-- For 1, 2, 3, ... columns, find the biggest inner column that still fits all
+-- thumbnails, and keep the column count where that is biggest (fewer unless
+-- more are clearly better): a few windows get one column of big thumbnails, and more columns only
+-- appear once a column would get too crowded.
 -- `inner` is the x of the edge facing the middle; `dir` is -1 (left) or 1.
 local function fill_side(targets, area, inner, side_w, dir, aspect)
   local n = #targets
@@ -267,28 +261,58 @@ local function fill_side(targets, area, inner, side_w, dir, aspect)
     return
   end
 
-  local best_cols, best_h = 1, 0
+  -- How many thumbnails each of `cols` columns holds when the inner one is w1 wide.
+  local function capacities(w1, cols)
+    local caps, total, w = {}, 0, w1
+    for k = 1, cols do
+      caps[k] = math.floor(area.h * aspect / w)
+      total = total + caps[k]
+      w = w * cfg.decay
+    end
+    return caps, total
+  end
+
+  local best
   for cols = 1, n do
-    local rows = math.ceil(n / cols)
-    local h = math.min(area.h / rows, side_w / cols / aspect)
-    if h > best_h + 0.5 then
-      best_cols, best_h = cols, h
+    local span = (1 - cfg.decay ^ cols) / (1 - cfg.decay)
+    local hi = math.min(side_w / span, area.h * aspect)
+    local _, total = capacities(hi, cols)
+    local w1 = hi
+    if total < n then
+      local lo = 0
+      for _ = 1, 40 do
+        local mid = (lo + hi) / 2
+        if select(2, capacities(mid, cols)) >= n then
+          lo = mid
+        else
+          hi = mid
+        end
+      end
+      w1 = lo
+    end
+    -- Another column has to be clearly better (5%) to be worth adding.
+    if not best or w1 > best.w1 * 1.05 then
+      best = { w1 = w1, cols = cols }
     end
   end
 
-  local th = best_h
-  local tw = th * aspect
-  local base, extra = math.floor(n / best_cols), n % best_cols
-  local x, i = inner, 1
-  for c = 1, best_cols do
-    local count = base + (c <= extra and 1 or 0)
+  local caps = capacities(best.w1, best.cols)
+  local x, i, w = inner, 1, best.w1
+  for c = 1, best.cols do
+    local count = math.min(caps[c], n - i + 1)
+    if c == best.cols then
+      count = n - i + 1 -- rounding: the last column takes what's left
+    end
+    local th = math.min(w / aspect, area.h / math.max(count, 1))
+    local tw = th * aspect
     local tx = dir < 0 and (x - tw) or x
     local y = area.y + (area.h - th * count) / 2
     for j = 0, count - 1 do
       targets[i + j]:place({ x = tx, y = y + j * th, w = tw, h = th })
     end
     i = i + count
-    x = x + dir * tw
+    x = x + dir * w
+    w = w * cfg.decay
   end
 end
 
@@ -594,6 +618,9 @@ end
 -- Set while stage navigation moves focus, so that focus isn't a promotion.
 local navigating = false
 
+-- workspace id -> slot the next Alt+Tab swaps with (see M.tab)
+local tab_next = {}
+
 hl.on("window.active", guarded(function(window, reason)
   if navigating or not window or not window.stable_id or not DELIBERATE[reason] then
     return
@@ -602,6 +629,7 @@ hl.on("window.active", guarded(function(window, reason)
     return
   end
   swap_and_flash(window.workspace, slots_for(window.workspace.id), window.stable_id)
+  tab_next[window.workspace.id] = nil
   relayout_soon()
 end))
 
@@ -645,6 +673,7 @@ function M.promote()
   local ws = stage_focused()
   if w and ws and w.stable_id then
     swap_and_flash(ws, slots_for(ws.id), w.stable_id)
+    tab_next[ws.id] = nil
     relayout_soon()
   end
 end
@@ -731,9 +760,14 @@ function M.focus(dir)
   end
 end
 
--- Alt+Tab on a stage workspace: the next window in opening order comes into
--- the middle (swapping places with the current one), so repeated presses
--- walk through every window. Elsewhere, Omarchy's own Alt+Tab.
+-- Alt+Tab on a stage workspace steps through the thumbnails in their screen
+-- order: inner columns first (alternating left and right, top to bottom),
+-- then the outer ones. Each press swaps only two windows: the middle one and
+-- the thumbnail at the next position. Repeated presses visit every window
+-- and the next press after that brings back the one you started from;
+-- Alt+Shift+Tab steps back (one press undoes the last Alt+Tab). Any other
+-- swap (click, SUPER + Z, a new window) starts the walk over.
+-- Elsewhere, Omarchy's own Alt+Tab.
 function M.tab(step)
   return function()
     local ws = stage_focused()
@@ -747,11 +781,27 @@ function M.tab(step)
     local windows = tiled_windows(ws)
     local active = hl.get_active_window()
     sync(list, windows, active and active.stable_id)
-    if #list < 2 then
+    local n = #list
+    if n < 2 then
       return
     end
 
-    local target_id = next_in_sequence(list, list[1], step)
+    -- tab_next[ws] is the slot the next forward press swaps with.
+    local k = math.min(math.max(tab_next[ws.id] or 2, 2), n + 1)
+    if step > 0 then
+      if k > n then
+        k = 2
+      end
+      tab_next[ws.id] = k + 1
+    else
+      k = k - 1
+      if k < 2 then
+        k = n
+      end
+      tab_next[ws.id] = k
+    end
+
+    local target_id = list[k]
     local target
     for _, w in ipairs(windows) do
       if w.stable_id == target_id then

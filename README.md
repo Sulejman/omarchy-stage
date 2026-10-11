@@ -5,7 +5,8 @@ A Stage Manager-style tiling layout for [Omarchy](https://omarchy.org/) on Hyprl
 The window you're working in sits alone in the middle of the screen. Every
 other window on the workspace becomes a thumbnail in columns on the left and
 right. Thumbnails are as big as the space allows: a few windows get one column
-of large thumbnails, and more columns appear only when a column gets crowded.
+of large thumbnails, and more columns appear only when a column gets crowded,
+each one further out a bit smaller.
 
 Thumbnails keep their spot. Bringing a window into the middle swaps it with
 the current middle window, and nothing else moves.
@@ -25,7 +26,7 @@ keep Omarchy's normal bindings.
 |---|---|
 | `SUPER + L` | Cycle the workspace layout: dwindle → scrolling → stage → dwindle |
 | Click a thumbnail | Swap it into the middle |
-| `ALT + TAB` / `ALT + SHIFT + TAB` | Next / previous window, in the order they were opened |
+| `ALT + TAB` / `ALT + SHIFT + TAB` | Next / previous thumbnail in screen order, inner columns first. Each press swaps two windows; repeated presses visit them all, and `ALT + SHIFT + TAB` undoes the last step |
 | `SUPER + arrows` | Move focus without moving anything (you can type into a thumbnail) |
 | `SUPER + Z` | Swap the focused thumbnail into the middle |
 | `SUPER + -` / `SUPER + =` | Widen / narrow the middle window (`ALT`: a little, `CTRL`: a lot). Thumbnails resize to use the space that's left |
