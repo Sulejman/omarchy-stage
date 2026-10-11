@@ -2,9 +2,8 @@
 --
 -- The window you're using sits alone in the middle of the screen. Every
 -- other window on the workspace becomes a thumbnail in columns on the left
--- and right. A normal 16:9/16:10 screen gets one column per side; wider
--- screens get more, each further column smaller than the last, so they stay
--- visible in your peripheral vision.
+-- and right. Thumbnails are as big as the space allows: a few windows get one
+-- column of large thumbnails, and more columns appear only when needed.
 --
 -- Thumbnails keep their spot. Bringing a window into the middle only swaps
 -- it with the current middle window; nothing else moves.
@@ -15,8 +14,8 @@
 --                          into a focused thumbnail)
 --   SUPER + Z              swap the focused thumbnail into the middle
 --   SUPER + - / =          widen / narrow the middle window (ALT: a little,
---                          CTRL: a lot); the freed space fills with more,
---                          smaller thumbnail columns
+--                          CTRL: a lot); thumbnails resize to use the
+--                          space that's left
 --
 -- SUPER + L cycles the current workspace through dwindle -> scrolling ->
 -- stage -> dwindle. The dwindle/scrolling steps are still Omarchy's own
@@ -45,13 +44,12 @@ local cfg = {
   center_aspect = 1.6, -- preferred width:height of the middle window...
   center_min = 0.40, -- ...but never less than this share of the screen width
   center_max = 0.64, -- ...and never more
-  column_h = 0.33, -- inner thumbnail column width, as a fraction of the screen height
-  min_column_h = 0.08, -- columns narrower than this (fraction of height) aren't added
-  decay = 0.65, -- each column further out is this much narrower, so its thumbnails are smaller and more fit
   center_step_min = 0.25, -- the middle window can be resized between these shares of the width
   center_step_max = 0.92,
 
-  thumb_opacity = "0.85 0.85", -- thumbnails are a bit translucent, focused / unfocused
+  thumb_opacity = 0.72, -- thumbnails at rest; the selected or hovered one is fully opaque
+  select_border = 4, -- border (px) on thumbnails; only the selected one's is visible
+  swap_flash_ms = 700, -- both windows of a swap light up this long, so it's clear which two traded places
 }
 
 local LAYOUT = "lua:stage"
@@ -251,85 +249,46 @@ local function center_share(area, ws_id)
   return math.min(cfg.center_step_max, math.max(cfg.center_step_min, share))
 end
 
--- Width of each side and of each thumbnail column (inner first). Columns keep
--- their natural width: the inner one is sized from the screen height, every
--- further one is `decay` narrower. A column is added once about a third of it
--- fits (all columns are then squeezed to fit) and never stretched, so
--- freeing up space adds columns instead of making thumbnails bigger.
+-- Width of each side of the middle window.
 local function side_geometry(area, ws_id)
-  local side_w = area.w * (1 - center_share(area, ws_id)) / 2
-
-  local widths, total = {}, 0
-  local w = math.min(area.h * cfg.column_h, side_w)
-  local min_w = area.h * cfg.min_column_h
-  while w >= min_w and total + w * 0.3 <= side_w do
-    widths[#widths + 1] = w
-    total = total + w
-    w = w * cfg.decay
-  end
-
-  if #widths == 0 then
-    return side_w, { side_w }
-  end
-  if total > side_w then
-    for k = 1, #widths do
-      widths[k] = widths[k] * side_w / total
-    end
-  end
-  return side_w, widths
+  return area.w * (1 - center_share(area, ws_id)) / 2
 end
 
--- Fill columns from the middle outward with thumbnails shaped like the
--- middle window (so they are true miniatures of it), stacked top to bottom
--- and centred vertically. The outermost
--- column takes any overflow and shrinks its thumbnails to fit.
+-- Lay out one side's thumbnails, shaped like the middle window (so they are
+-- true miniatures of it). Try 1, 2, 3, ... columns and keep the count that
+-- gives the biggest thumbnails (fewer columns on a tie): a few windows get a
+-- single column of big thumbnails that uses the full height, and more columns
+-- only appear once a column would get too crowded. Inner columns fill first,
+-- top to bottom, and each column is centred vertically.
 -- `inner` is the x of the edge facing the middle; `dir` is -1 (left) or 1.
-local function fill_side(targets, area, inner, widths, dir, aspect)
+local function fill_side(targets, area, inner, side_w, dir, aspect)
   local n = #targets
   if n == 0 then
     return
   end
 
-  -- How many thumbnails each column holds at its size.
-  local caps, total_cap = {}, 0
-  for k, w in ipairs(widths) do
-    caps[k] = math.max(1, math.floor(area.h / (w / aspect)))
-    total_cap = total_cap + caps[k]
-  end
-
-  -- Spread thumbnails over the columns: one per column from the inside out,
-  -- then each next one to the column that is least full for its size (inner
-  -- wins ties). Outer, smaller columns hold more, so they take more. Past
-  -- total capacity this keeps spreading the overflow and columns squeeze.
-  local counts = {}
-  for k = 1, #widths do
-    counts[k] = k <= n and 1 or 0
-  end
-  for _ = #widths + 1, n do
-    local best
-    for k = 1, #widths do
-      if not best or (counts[k] + 1) / caps[k] < (counts[best] + 1) / caps[best] then
-        best = k
-      end
+  local best_cols, best_h = 1, 0
+  for cols = 1, n do
+    local rows = math.ceil(n / cols)
+    local h = math.min(area.h / rows, side_w / cols / aspect)
+    if h > best_h + 0.5 then
+      best_cols, best_h = cols, h
     end
-    counts[best] = counts[best] + 1
   end
 
+  local th = best_h
+  local tw = th * aspect
+  local base, extra = math.floor(n / best_cols), n % best_cols
   local x, i = inner, 1
-  for c, w in ipairs(widths) do
-    local count = counts[c]
-    if count > 0 then
-      local h = w / aspect
-      local fit = math.min(1, area.h / (h * count))
-      local tw, th = w * fit, h * fit
-      local tx = dir < 0 and (x - tw) or x
-      local y = area.y + (area.h - th * count) / 2
-      for j = 0, count - 1 do
-        targets[i + j]:place({ x = tx, y = y + j * th, w = tw, h = th })
-      end
-      i = i + count
+  for c = 1, best_cols do
+    local count = base + (c <= extra and 1 or 0)
+    local tx = dir < 0 and (x - tw) or x
+    local y = area.y + (area.h - th * count) / 2
+    for j = 0, count - 1 do
+      targets[i + j]:place({ x = tx, y = y + j * th, w = tw, h = th })
     end
-    x = x + dir * w
+    i = i + count
+    x = x + dir * tw
   end
 end
 
@@ -418,7 +377,7 @@ hl.layout.register("stage", {
     end
 
     local ws_id = windows[1] and windows[1].workspace.id
-    local side_w, widths = side_geometry(area, ws_id)
+    local side_w = side_geometry(area, ws_id)
     local mid_w = area.w - 2 * side_w
     if middle then
       show_full(middle)
@@ -439,8 +398,8 @@ hl.layout.register("stage", {
       list[#list + 1] = t
     end
     local aspect = thumb_w / area.h
-    fill_side(left, area, area.x + side_w, widths, -1, aspect)
-    fill_side(right, area, area.x + area.w - side_w, widths, 1, aspect)
+    fill_side(left, area, area.x + side_w, side_w, -1, aspect)
+    fill_side(right, area, area.x + area.w - side_w, side_w, 1, aspect)
   end),
 
   layout_msg = function(_, msg)
@@ -514,16 +473,25 @@ end
 
 -- Thumbnails must not grab focus just because the mouse passes over them,
 -- or a later click on them wouldn't register as a new focus. They also carry
--- the "stage-thumb" tag, which the window rule below makes more translucent.
--- The tag itself is the source of truth (it survives config reloads, a Lua
--- table wouldn't); the hover block is always set together with it.
-local function has_thumb_tag(window)
+-- the "stage-thumb" tag, which the highlight rules below style. The tag itself
+-- is the source of truth (it survives config reloads, a Lua table wouldn't);
+-- the hover block is always set together with it.
+local function has_tag(window, name)
   for _, tag in ipairs(type(window.tags) == "table" and window.tags or {}) do
-    if tag == "stage-thumb" or tag == "stage-thumb*" then
+    if tag == name or tag == name .. "*" then
       return true
     end
   end
   return false
+end
+
+local function has_thumb_tag(window)
+  return has_tag(window, "stage-thumb")
+end
+
+-- window: a window object or an "address:0x..." selector
+local function tag_window(window, tag, on)
+  hl.dispatch(hl.dsp.window.tag({ window = window, tag = (on and "+" or "-") .. tag }))
 end
 
 local function set_thumb(window, is_thumb)
@@ -531,7 +499,10 @@ local function set_thumb(window, is_thumb)
     return
   end
   hl.dispatch(hl.dsp.window.set_prop({ window = window, prop = "no_follow_mouse", value = is_thumb and "1" or "0" }))
-  hl.dispatch(hl.dsp.window.tag({ window = window, tag = (is_thumb and "+" or "-") .. "stage-thumb" }))
+  tag_window(window, "stage-thumb", is_thumb)
+  if not is_thumb and has_tag(window, "stage-hover") then
+    tag_window(window, "stage-hover", false)
+  end
 end
 
 local function update_thumbs(ws)
@@ -541,7 +512,67 @@ local function update_thumbs(ws)
   end
 end
 
-o.window({ tag = "stage-thumb" }, { opacity = cfg.thumb_opacity })
+-- Highlighting, all done with tags and window rules: taking a tag off puts the
+-- window straight back under Omarchy's own opacity and border rules.
+--   stage-thumb  every thumbnail: dimmed unless focused; the focused one (e.g.
+--                reached with SUPER + arrows) gets a thick border in the
+--                theme's active border colour, the others an invisible one
+--   stage-hover  the thumbnail under the mouse: opaque, softer border
+--   stage-swap   both windows of a swap, briefly: border in the accent colour.
+--                Colour only, so no window changes size (and re-lays out) for it
+local function accent(alpha)
+  local ok, opt = pcall(hl.get_config, "general.col.active_border")
+  local argb = ok and type(opt) == "table" and type(opt.colors) == "table" and opt.colors[1]
+  local rgb = type(argb) == "string" and argb:match("^0[xX]%x%x(%x%x%x%x%x%x)$") or "ffffff"
+  return "rgba(" .. rgb .. alpha .. ")"
+end
+
+o.window({ tag = "stage-thumb" }, {
+  opacity = "1.0 " .. cfg.thumb_opacity,
+  border_size = cfg.select_border,
+  border_color = accent("ff") .. " rgba(00000000)",
+})
+o.window({ tag = "stage-hover" }, {
+  opacity = "1.0 1.0",
+  border_color = accent("ff") .. " " .. accent("99"),
+})
+o.window({ tag = "stage-swap" }, {
+  opacity = "1.0 1.0",
+  border_color = accent("ff") .. " " .. accent("ff"),
+})
+
+-- Flash both windows of a swap. A window flashed again before its last flash
+-- ended keeps the newer one; a window that closed meanwhile is skipped.
+local flash_gen = {}
+local function flash(ws, ids)
+  local want = {}
+  for _, id in ipairs(ids) do
+    want[id] = true
+  end
+  for _, w in ipairs(tiled_windows(ws)) do
+    if want[w.stable_id] then
+      local target = "address:" .. w.address
+      local gen = (flash_gen[target] or 0) + 1
+      flash_gen[target] = gen
+      tag_window(target, "stage-swap", true)
+      hl.timer(guarded(function()
+        if flash_gen[target] == gen then
+          flash_gen[target] = nil
+          pcall(tag_window, target, "stage-swap", false)
+        end
+      end), { timeout = cfg.swap_flash_ms, type = "oneshot" })
+    end
+  end
+end
+
+-- swap_in plus the flash, for swaps the user caused
+local function swap_and_flash(ws, list, id)
+  local old = list[1]
+  swap_in(list, id)
+  if old and old ~= id then
+    flash(ws, { old, id })
+  end
+end
 
 -- Focus events fire mid-update; act on the next tick, once state has settled.
 local pending = false
@@ -570,7 +601,7 @@ hl.on("window.active", guarded(function(window, reason)
   if not is_stage(window.workspace) or window.floating then
     return
   end
-  swap_in(slots_for(window.workspace.id), window.stable_id)
+  swap_and_flash(window.workspace, slots_for(window.workspace.id), window.stable_id)
   relayout_soon()
 end))
 
@@ -589,6 +620,12 @@ hl.timer(guarded(function()
       hl.dispatch(hl.dsp.layout("refresh"))
     end
     update_thumbs(ws)
+    -- A reload mid-flash would strand the swap highlight.
+    for _, w in ipairs(tiled_windows(ws)) do
+      if has_tag(w, "stage-swap") then
+        tag_window(w, "stage-swap", false)
+      end
+    end
   end
 end), { timeout = 200, type = "oneshot" })
 
@@ -607,7 +644,7 @@ function M.promote()
   local w = hl.get_active_window()
   local ws = stage_focused()
   if w and ws and w.stable_id then
-    swap_in(slots_for(ws.id), w.stable_id)
+    swap_and_flash(ws, slots_for(ws.id), w.stable_id)
     relayout_soon()
   end
 end
@@ -725,7 +762,7 @@ function M.tab(step)
       return
     end
 
-    swap_in(list, target_id)
+    swap_and_flash(ws, list, target_id)
     navigating = true
     hl.dispatch(hl.dsp.focus({ window = target }))
     navigating = false
@@ -753,6 +790,23 @@ function M.resize(dx)
     center_adjust[ws.id] = adjust
     save_center()
     hl.dispatch(hl.dsp.layout("refresh"))
+  end
+end
+
+-- Called by the stagethumbs plugin when the pointer moves onto a thumbnail
+-- (its address) or off all of them (""). Hyprland has no hover event for Lua.
+-- Every window on the workspace is brought in line, so a highlight left over
+-- from before a config reload is cleared too.
+function M.hover(address)
+  local ws = hl.get_active_workspace()
+  if not is_stage(ws) then
+    return
+  end
+  for _, w in ipairs(tiled_windows(ws)) do
+    local want = address ~= "" and w.address == address and has_thumb_tag(w)
+    if has_tag(w, "stage-hover") ~= want then
+      tag_window(w, "stage-hover", want)
+    end
   end
 end
 

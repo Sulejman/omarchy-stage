@@ -4,16 +4,15 @@ A Stage Manager-style tiling layout for [Omarchy](https://omarchy.org/) on Hyprl
 
 The window you're working in sits alone in the middle of the screen. Every
 other window on the workspace becomes a thumbnail in columns on the left and
-right. A normal 16:9 or 16:10 screen gets one column per side. Wider screens
-get more columns, each one further out a bit smaller, so they stay visible in
-your peripheral vision.
+right. Thumbnails are as big as the space allows: a few windows get one column
+of large thumbnails, and more columns appear only when a column gets crowded.
 
 Thumbnails keep their spot. Bringing a window into the middle swaps it with
 the current middle window, and nothing else moves.
 
 ![Stage: a browser in the middle, other windows as thumbnails on both sides](docs/stage.png)
 
-| Any window can take the middle | Narrow the middle and more, smaller columns appear |
+| Any window can take the middle | Narrow the middle and the thumbnails get more room |
 |---|---|
 | ![An image viewer in the middle](docs/stage-image.png) | ![A narrow editor in the middle with two thumbnail columns per side](docs/stage-narrow.png) |
 
@@ -29,7 +28,7 @@ keep Omarchy's normal bindings.
 | `ALT + TAB` / `ALT + SHIFT + TAB` | Next / previous window, in the order they were opened |
 | `SUPER + arrows` | Move focus without moving anything (you can type into a thumbnail) |
 | `SUPER + Z` | Swap the focused thumbnail into the middle |
-| `SUPER + -` / `SUPER + =` | Widen / narrow the middle window (`ALT`: a little, `CTRL`: a lot). The freed space fills with more, smaller thumbnail columns |
+| `SUPER + -` / `SUPER + =` | Widen / narrow the middle window (`ALT`: a little, `CTRL`: a lot). Thumbnails resize to use the space that's left |
 
 Which workspaces are in stage mode and how wide their middle window is are
 remembered across reloads and logins.
@@ -93,8 +92,8 @@ folder, or `~/.config/hypr/stagethumbs/` for a manual install).
 ## Tuning
 
 The `cfg` table at the top of `hypr/stage.lua` holds the knobs: middle window
-aspect and min/max share of the screen, thumbnail column width, how quickly
-outer columns shrink, and thumbnail opacity. With the plugin, edit
+aspect and min/max share of the screen, thumbnail opacity, the selection
+border width and how long the swap highlight lasts. With the plugin, edit
 `~/.config/omarchy/plugins/io.github.sulejman.stage/hypr/stage.lua` and run
 `hyprctl reload`. With a manual install, edit `~/.config/hypr/stage.lua`
 (Hyprland reloads on save). Updates replace the file, so keep a note of your

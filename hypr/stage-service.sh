@@ -13,6 +13,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="$DIR/stagethumbs"
 SO="$PLUGIN/stagethumbs.so"
 STAMP="$PLUGIN/.built-for"
+LOADED="$PLUGIN/.loaded" # path of the copy loaded into Hyprland
 
 notify() {
   notify-send -a "Stage" "Stage layout" "$1" 2>/dev/null || true
@@ -29,12 +30,14 @@ load_stage() {
 }
 
 # Hyprland plugins must be built against the exact Hyprland that's installed.
-# Rebuild when the package version changes; on failure, run without miniatures.
+# Rebuild when the package version or the plugin source changes (a plugin
+# update); on failure, run without miniatures.
 build_thumbs() {
-  local want have
-  want=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }')
+  local version want have
+  version=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }')
+  [[ -n $version ]] || return 0
+  want="$version $(md5sum "$PLUGIN/main.cpp" | cut -c1-12)"
   have=$(cat "$STAMP" 2>/dev/null)
-  [[ -n $want ]] || return 0
   [[ $want == "$have" ]] && return 0
 
   if ! command -v make >/dev/null || ! command -v g++ >/dev/null || ! pkg-config --exists hyprland 2>/dev/null; then
@@ -48,14 +51,31 @@ build_thumbs() {
   else
     rm -f "$SO"
     echo "$want" >"$STAMP"
-    notify "Couldn't build the miniature-thumbnails plugin for Hyprland $want; thumbnails are plain. See $PLUGIN/build.log"
+    notify "Couldn't build the miniature-thumbnails plugin for Hyprland $version; thumbnails are plain. See $PLUGIN/build.log"
   fi
 }
 
+# A Hyprland plugin can't be fully unloaded (its C++ code stays mapped), and
+# loading the same path again just returns that old copy. So each build is
+# loaded from its own file, named after its stamp, and the previous one is
+# unloaded first.
 load_thumbs() {
-  [[ -f $SO ]] || return 0
-  hyprctl plugin list 2>/dev/null | grep -q '^Plugin stagethumbs ' && return 0
-  hyprctl plugin load "$SO" >/dev/null
+  [[ -f $SO && -f $STAMP ]] || return 0
+  local target previous
+  target="$PLUGIN/stagethumbs-$(md5sum <"$STAMP" | cut -c1-12).so"
+  [[ -f $target ]] || cp -f "$SO" "$target"
+  previous=$(cat "$LOADED" 2>/dev/null)
+
+  if hyprctl plugin list 2>/dev/null | grep -q '^Plugin stagethumbs '; then
+    [[ $previous == "$target" ]] && return 0
+    # Older versions of this script loaded stagethumbs.so itself.
+    hyprctl plugin unload "${previous:-$SO}" >/dev/null
+    sleep 0.3
+  fi
+  hyprctl plugin load "$target" >/dev/null || return 0
+  echo "$target" >"$LOADED"
+  # Earlier builds are no longer needed on disk (a loaded one stays in memory).
+  find "$PLUGIN" -maxdepth 1 -name 'stagethumbs-*.so' ! -path "$target" -delete
   sleep 0.5
 }
 

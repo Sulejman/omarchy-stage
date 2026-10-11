@@ -6,7 +6,9 @@
 //   - keeps telling the app it has its full (middle-of-screen) size,
 //   - draws that full-size content scaled down into the small box,
 //   - scales pointer coordinates so clicks land where they appear,
-//   - redraws the whole thumbnail whenever the app updates.
+//   - redraws the whole thumbnail whenever the app updates,
+//   - tells the layout which thumbnail the pointer is over, so it can
+//     highlight it (Hyprland has no hover event for Lua).
 //
 // It only acts on tiled, non-fullscreen windows on a workspace whose layout
 // is lua:stage, so a window moved elsewhere goes back to normal by itself.
@@ -26,6 +28,7 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 
 extern "C" {
 #include <lua.h>
@@ -34,6 +37,7 @@ extern "C" {
 
 #include <unordered_map>
 #include <optional>
+#include <format>
 
 using Desktop::View::CWindow;
 
@@ -49,6 +53,10 @@ static CFunctionHook*                          g_hkTexBox     = nullptr;
 static CFunctionHook*                          g_hkFocus      = nullptr;
 static CFunctionHook*                          g_hkMotion     = nullptr;
 static CFunctionHook*                          g_hkDamage     = nullptr;
+
+// thumbnail under the pointer (0: none), and the pending report of it to Lua
+static uintptr_t                               g_hovered = 0;
+static UP<SEventLoopDoLaterLock>               g_hoverReport;
 
 // The full size of a window currently shown as a thumbnail, if it is one.
 static std::optional<Vector2D> fullSize(const CWindow* w) {
@@ -177,9 +185,25 @@ static Vector2D toFull(SP<CWLSurfaceResource> surface, const Vector2D& local) {
     return local / *scale;
 }
 
+// Report hover changes to the layout's Lua side as _G.omarchy_stage.hover().
+// Deferred to the event loop: running Lua (which dispatches) from inside the
+// seat manager isn't safe. Only the latest state is reported, so a fast sweep
+// over several thumbnails costs one call.
+static void reportHover(uintptr_t hovered) {
+    if (hovered == g_hovered)
+        return;
+    g_hovered     = hovered;
+    g_hoverReport = g_pEventLoopManager->doLaterLock([] {
+        const auto addr = g_hovered ? std::format("0x{:x}", g_hovered) : std::string{};
+        HyprlandAPI::invokeHyprctlCommand("eval", std::format("local s = _G.omarchy_stage; if s and s.hover then s.hover('{}') end", addr));
+    });
+}
+
 typedef void (*setPointerFocusFn)(CSeatManager*, SP<CWLSurfaceResource>, const Vector2D&);
 static void hkSetPointerFocus(CSeatManager* self, SP<CWLSurfaceResource> surface, const Vector2D& local) {
     ((setPointerFocusFn)g_hkFocus->m_original)(self, surface, toFull(surface, local));
+    const auto window = windowOf(surface);
+    reportHover(window && fullSize(window.get()) ? reinterpret_cast<uintptr_t>(window.get()) : 0);
 }
 
 typedef void (*sendPointerMotionFn)(CSeatManager*, uint32_t, const Vector2D&);
@@ -220,7 +244,10 @@ static int luaSet(lua_State* L) {
 
 // clear(address): back to a normal window
 static int luaClear(lua_State* L) {
-    g_full.erase(addressArg(L, 1));
+    const auto addr = addressArg(L, 1);
+    g_full.erase(addr);
+    if (addr == g_hovered)
+        reportHover(0);
     return 0;
 }
 
@@ -267,10 +294,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "clear", luaClear);
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "loaded", luaLoaded);
 
-    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.1"};
+    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.2"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    g_hoverReport.reset(); // drop a pending report before our code is unloaded
     g_full.clear();
     for (auto* h : {g_hkReportSize, g_hkUV, g_hkTexBox, g_hkFocus, g_hkMotion, g_hkDamage}) {
         if (h)
