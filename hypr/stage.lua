@@ -9,7 +9,8 @@
 -- it with the current middle window; nothing else moves.
 --   click a thumbnail      swap it into the middle
 --   ALT + TAB              hold ALT, tap TAB to move the highlight across the
---   ALT + SHIFT + TAB      thumbnails (inner first); release ALT to open it
+--   ALT + SHIFT + TAB      thumbnails (left side, then right); release ALT
+--                          to open it
 --   SUPER + arrows         move focus without moving anything (you can type
 --                          into a focused thumbnail)
 --   SUPER + Z              swap the focused thumbnail into the middle
@@ -757,11 +758,24 @@ end
 
 -- Alt+Tab on a stage workspace is a switcher: while ALT is held, each TAB
 -- moves the highlight (keyboard focus, which gives the thumbnail its border)
--- to the next thumbnail in screen order: inner columns first, alternating
--- left and right, top to bottom, then the outer ones. SHIFT goes backwards.
+-- to the next thumbnail in screen order: the whole left side first (inner
+-- column top to bottom, then the outer ones), then the right side the same
+-- way. SHIFT goes backwards.
 -- Releasing ALT opens the highlighted window into the middle (one swap).
 -- Elsewhere, Omarchy's own Alt+Tab.
-local switching = nil -- { ws = workspace id, k = highlighted slot } while ALT is held
+local switching = nil -- { ws = workspace id, p = position in the order } while ALT is held
+
+-- Slot indices in switcher order. Slots alternate sides (2 left, 3 right,
+-- 4 left, ...) and each side fills its inner column first.
+local function switch_order(n)
+  local order = {}
+  for start = 2, 3 do
+    for k = start, n, 2 do
+      order[#order + 1] = k
+    end
+  end
+  return order
+end
 
 function M.tab(step)
   return function()
@@ -781,16 +795,18 @@ function M.tab(step)
       return
     end
 
+    local order = switch_order(n)
     if not switching or switching.ws ~= ws.id then
-      switching = { ws = ws.id, k = step > 0 and 1 or n + 1 }
+      switching = { ws = ws.id, p = step > 0 and 0 or #order + 1 }
     end
-    local k = switching.k + step
-    if k > n then
-      k = 2
-    elseif k < 2 then
-      k = n
+    local p = switching.p + step
+    if p > #order then
+      p = 1
+    elseif p < 1 then
+      p = #order
     end
-    switching.k = k
+    switching.p = p
+    local k = order[p]
 
     for _, w in ipairs(windows) do
       if w.stable_id == list[k] then
