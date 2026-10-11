@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.sulejman.stage",
   "name": "Stage Layout",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Sulejman Sarajlija",
   "license": "MIT",
   "description": "Stage Manager-style layout for Hyprland: one window in the middle, the rest as thumbnails on both sides. Adds a stage step to SUPER+L.",
