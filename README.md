@@ -84,6 +84,9 @@ small box, so apps re-lay themselves out for that size. The optional
 middle-of-screen size and draws that content scaled down. Clicks are scaled
 too, so they land where they appear.
 
+Each thumbnail also carries a small badge of the app's own icon in its
+bottom-left corner, looked up from the window class and the desktop files.
+
 Hyprland plugins must be built against the exact Hyprland version that's
 running, so both install methods rebuild it when the `hyprland` package
 changes. If a build fails, you get a notification, stage keeps working with
