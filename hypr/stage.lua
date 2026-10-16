@@ -97,6 +97,11 @@ local DELIBERATE = {
 -- inner column first). Windows only change slot when swapped.
 local slots = {}
 
+-- workspace id -> the stable_id that held the middle before the current one:
+-- the window Alt+Tab returns to first. One deep is enough, because the middle
+-- is already the most recently used window.
+local previous = {}
+
 local function index_of(list, value)
   for i, v in ipairs(list) do
     if v == value then
@@ -595,6 +600,7 @@ local function swap_and_flash(ws, list, id)
   local old = list[1]
   swap_in(list, id)
   if old and old ~= id then
+    previous[ws.id] = old
     flash(ws, { old, id })
   end
 end
@@ -760,7 +766,8 @@ end
 -- moves the highlight (keyboard focus, which gives the thumbnail its border)
 -- to the next thumbnail in screen order: the whole left side first (inner
 -- column top to bottom, then the outer ones), then the right side the same
--- way. SHIFT goes backwards.
+-- way. SHIFT goes backwards. The first TAB starts on the window you were on
+-- before the current one, so releasing ALT there flips back.
 -- Releasing ALT opens the highlighted window into the middle (one swap).
 -- A release bind can't see that (the TAB presses in between cancel it), so
 -- the stagethumbs plugin watches for the ALT release and calls tab_commit.
@@ -779,6 +786,18 @@ local function switch_order(n)
     end
   end
   return order
+end
+
+-- Where a fresh switcher session starts: the previous middle window's position
+-- in the switcher order, so TAB returns to the window you were just on. Falls
+-- back to the ends of the order when there is no such window.
+local function switch_start(list, order, prev_id, step)
+  local q = prev_id and index_of(list, prev_id)
+  q = q and index_of(order, q)
+  if q then
+    return q
+  end
+  return step > 0 and 1 or #order
 end
 
 function M.tab(step)
@@ -801,7 +820,7 @@ function M.tab(step)
 
     local order = switch_order(n)
     if not switching or switching.ws ~= ws.id then
-      switching = { ws = ws.id, p = step > 0 and 0 or #order + 1 }
+      switching = { ws = ws.id, p = switch_start(list, order, previous[ws.id], step) - step }
     end
     local p = switching.p + step
     if p > #order then
