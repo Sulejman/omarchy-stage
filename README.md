@@ -27,6 +27,7 @@ keep Omarchy's normal bindings.
 | `SUPER + L` | Cycle the workspace layout: dwindle → scrolling → stage → dwindle |
 | Click a thumbnail | Swap it into the middle |
 | `ALT + TAB` / `ALT + SHIFT + TAB` | Switcher: hold `ALT` and tap `TAB` to move the highlight across the thumbnails (the left side first, inner column top to bottom, then the right side; `SHIFT` goes back), release `ALT` to open the highlighted one |
+| `ALT + ESC` | While the switcher is open: cancel it. Nothing is swapped and focus returns to the middle window |
 | `SUPER + arrows` | Move focus without moving anything (you can type into a thumbnail) |
 | `SUPER + Z` | Swap the focused thumbnail into the middle |
 | `SUPER + -` / `SUPER + =` | Widen / narrow the middle window (`ALT`: a little, `CTRL`: a lot). Thumbnails resize to use the space that's left |

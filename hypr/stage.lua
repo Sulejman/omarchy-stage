@@ -852,6 +852,31 @@ function M.tab_commit()
   end
 end
 
+-- ALT+ESC: abandon a pending switch. Clearing it is enough to stop the swap --
+-- tab_commit bails with no pending switch -- but put focus back on the middle,
+-- so the workspace looks as it did before the switch began.
+function M.cancel()
+  if not switching then
+    return
+  end
+  switching = nil
+
+  local ws = stage_focused()
+  local list = ws and slots_for(ws.id)
+  if not list then
+    return
+  end
+  for _, w in ipairs(tiled_windows(ws)) do
+    if w.stable_id == list[1] then
+      navigating = true
+      hl.dispatch(hl.dsp.focus({ window = w }))
+      navigating = false
+      relayout_soon()
+      return
+    end
+  end
+end
+
 -- Omarchy's horizontal resize keys. On a stage workspace they widen or narrow
 -- the middle window (kept centred); elsewhere they resize as usual.
 function M.resize(dx)
@@ -909,8 +934,10 @@ end
 
 hl.unbind("ALT + TAB")
 hl.unbind("ALT + SHIFT + TAB")
+hl.unbind("ALT + ESCAPE")
 o.bind("ALT + TAB", "Focus on next window", guarded(M.tab(1)))
 o.bind("ALT + SHIFT + TAB", "Focus on previous window", guarded(M.tab(-1)))
+o.bind("ALT + ESCAPE", "Cancel the window switch", guarded(M.cancel))
 
 for key, dir in pairs({ LEFT = "l", RIGHT = "r", UP = "u", DOWN = "d" }) do
   local name = ({ l = "left", r = "right", u = "above", d = "below" })[dir]
