@@ -403,6 +403,56 @@ static std::optional<std::string> iconFile(const std::string& name) {
     return std::nullopt;
 }
 
+// A Chromium --app window's class carries the site host:
+// "brave-gemini.google.com__app-Default" -> "gemini.google.com". Empty when the
+// class is not a browser app window (a plain tab like "brave-browser", or any
+// other app), so the caller only trusts it for web apps.
+static std::string hostFromClass(const std::string& klass) {
+    static const std::vector<std::string> PREFIXES = {
+        "brave-", "google-chrome-", "chrome-", "chromium-", "microsoft-edge-", "vivaldi-", "opera-", "helium-",
+    };
+    const auto k = lower(klass);
+    std::string rest;
+    for (const auto& p : PREFIXES) {
+        if (k.rfind(p, 0) == 0) {
+            rest = k.substr(p.size());
+            break;
+        }
+    }
+    if (rest.empty())
+        return "";
+
+    // Up to the first character a host can't hold; the URL path and profile
+    // parts of the class follow an underscore.
+    const auto end  = rest.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789.-");
+    auto       host = rest.substr(0, end == std::string::npos ? rest.size() : end);
+    if (host.rfind("www.", 0) == 0)
+        host = host.substr(4);
+    return host.find('.') != std::string::npos ? host : "";
+}
+
+// The host of the first http(s) URL in a desktop file's Exec, e.g.
+// `omarchy-launch-webapp "https://gemini.google.com/app"` -> "gemini.google.com".
+static std::string hostFromExec(const std::string& exec) {
+    const auto e      = lower(exec);
+    auto       at     = e.find("https://");
+    size_t     len    = 8;
+    const auto httpAt = e.find("http://");
+    if (httpAt != std::string::npos && (at == std::string::npos || httpAt < at)) {
+        at  = httpAt;
+        len = 7;
+    }
+    if (at == std::string::npos)
+        return "";
+
+    at += len;
+    const auto end  = e.find_first_of("/\"' \t", at);
+    auto       host = e.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    if (host.rfind("www.", 0) == 0)
+        host = host.substr(4);
+    return host;
+}
+
 // The Icon= of the desktop file that best fits a window: a StartupWMClass
 // match names the app directly; failing that -- apps like the Omarchy shell
 // widgets all share one generic class, so the class says little -- the window
@@ -411,9 +461,10 @@ static std::optional<std::string> iconFile(const std::string& name) {
 static std::optional<std::string> desktopIconName(const std::string& klass, const std::string& title) {
     const auto      wantClass = lower(klass);
     const auto      wantTitle = lower(trim(title));
+    const auto      classHost = hostFromClass(klass);
     std::error_code ec;
 
-    std::optional<std::string> byTitle, byClass;
+    std::optional<std::string> byTitle, byHost, byClass;
     for (const auto& d : dataDirs()) {
         const auto adir = d + "/applications";
         if (!std::filesystem::is_directory(adir, ec))
@@ -448,9 +499,15 @@ static std::optional<std::string> desktopIconName(const std::string& klass, cons
             exe      = exe.substr(exe.find_last_of('/') + 1);
             if (!byClass && (lower(entry.path().stem().string()) == wantClass || (!exe.empty() && lower(exe) == wantClass)))
                 byClass = icon;
+
+            if (!byHost && !classHost.empty()) {
+                const auto execHost = hostFromExec(exec);
+                if (!execHost.empty() && execHost == classHost)
+                    byHost = icon;
+            }
         }
     }
-    return byTitle ? byTitle : byClass;
+    return byTitle ? byTitle : (byHost ? byHost : byClass);
 }
 
 static std::string iconForWindow(const std::string& klass, const std::string& title) {
@@ -594,7 +651,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_keyListener   = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
     g_stageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
 
-    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.4"};
+    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.5"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
