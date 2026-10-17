@@ -41,9 +41,18 @@ extern "C" {
 #include <lauxlib.h>
 }
 
-#include <unordered_map>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <optional>
+#include <unordered_map>
+#include <vector>
 #include <format>
+
+#include <hyprland/src/render/pass/TexPassElement.hpp>
+#include <hyprgraphics/image/Image.hpp>
 
 using Desktop::View::CWindow;
 
@@ -258,6 +267,311 @@ static void hkDamageSurface(void* self, SP<CWLSurfaceResource> surface, double x
     ((damageSurfaceFn)g_hkDamage->m_original)(self, surface, x, y, scale);
 }
 
+// --- app icon badge --------------------------------------------------------
+
+// A small badge of the app's own icon sits in the bottom-left corner of every
+// thumbnail, drawn on top of the miniature. The icon is resolved from the
+// window class through the desktop files and the active icon theme, then
+// loaded once and cached.
+
+static constexpr double ICON_SHARE = 0.09; // badge width, as a share of the thumbnail width
+static constexpr double ICON_MIN   = 14.0; // ...clamped between these,
+static constexpr double ICON_MAX   = 44.0; // ...in pixels
+static constexpr double ICON_INSET = 6.0;  // gap from the thumbnail's corner
+
+static std::unordered_map<std::string, std::string>          g_classIcon; // "class\ntitle" -> icon file ("" = none)
+static std::unordered_map<std::string, SP<Render::ITexture>> g_iconTex;   // icon file -> texture (null = failed)
+static CHyprSignalListener                                   g_stageListener;
+
+static std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
+static std::string trim(const std::string& s) {
+    const auto a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos)
+        return "";
+    return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
+}
+
+// The XDG data dirs that hold applications/ and icons/.
+static std::vector<std::string> dataDirs() {
+    std::vector<std::string> dirs;
+    const char*              home = std::getenv("HOME");
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        dirs.emplace_back(xdg);
+    else if (home)
+        dirs.emplace_back(std::string{home} + "/.local/share");
+
+    const char* list = std::getenv("XDG_DATA_DIRS");
+    const std::string s = (list && *list) ? list : "/usr/local/share:/usr/share";
+    for (size_t pos = 0; pos <= s.size();) {
+        const auto next = s.find(':', pos);
+        const auto part = s.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (!part.empty())
+            dirs.push_back(part);
+        if (next == std::string::npos)
+            break;
+        pos = next + 1;
+    }
+    return dirs;
+}
+
+// Omarchy records the current icon theme name here.
+static std::string activeIconTheme() {
+    const char* home = std::getenv("HOME");
+    if (home) {
+        std::ifstream f(std::string{home} + "/.local/state/omarchy/current/theme/icons.theme");
+        std::string   line;
+        if (std::getline(f, line) && !trim(line).empty())
+            return trim(line);
+    }
+    return "Yaru-blue"; // Omarchy's default
+}
+
+// The active theme and everything it inherits, so an icon that only the base
+// theme ships is still found.
+static std::vector<std::string> themeChain() {
+    std::vector<std::string> themes;
+    const auto               push = [&themes](const std::string& t) {
+        if (!t.empty() && std::find(themes.begin(), themes.end(), t) == themes.end())
+            themes.push_back(t);
+    };
+
+    push(activeIconTheme());
+
+    for (size_t i = 0; i < themes.size() && i < 8; i++) {
+        for (const auto& dir : dataDirs()) {
+            std::ifstream f(dir + "/icons/" + themes[i] + "/index.theme");
+            std::string   line;
+            while (std::getline(f, line)) {
+                if (line.rfind("Inherits=", 0) != 0)
+                    continue;
+                std::string cur;
+                for (char c : trim(line.substr(9)) + ",") {
+                    if (c == ',') {
+                        push(trim(cur));
+                        cur.clear();
+                    } else
+                        cur += c;
+                }
+            }
+        }
+    }
+
+    push("hicolor");
+    return themes;
+}
+
+// Resolve an icon name (as in a desktop file's Icon=) to a file on disk,
+// preferring a large PNG and falling back to SVG.
+static std::optional<std::string> iconFile(const std::string& name) {
+    std::error_code ec;
+    if (!name.empty() && name[0] == '/')
+        return std::filesystem::exists(name, ec) ? std::optional{name} : std::nullopt;
+
+    std::vector<std::string> iconDirs;
+    for (const auto& d : dataDirs())
+        iconDirs.push_back(d + "/icons");
+    if (const char* home = std::getenv("HOME"))
+        iconDirs.push_back(std::string{home} + "/.icons");
+
+    static const std::vector<std::string> SIZES = {"256x256", "192x192", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24", "16x16"};
+    const auto                            themes = themeChain();
+
+    for (const auto& dir : iconDirs) {
+        for (const auto& theme : themes) {
+            for (const auto& size : SIZES) {
+                const auto p = dir + "/" + theme + "/" + size + "/apps/" + name + ".png";
+                if (std::filesystem::exists(p, ec))
+                    return p;
+            }
+            const auto svg = dir + "/" + theme + "/scalable/apps/" + name + ".svg";
+            if (std::filesystem::exists(svg, ec))
+                return svg;
+        }
+    }
+
+    for (const auto& d : dataDirs()) {
+        for (const char* ext : {".png", ".svg"}) {
+            const auto p = d + "/pixmaps/" + name + ext;
+            if (std::filesystem::exists(p, ec))
+                return p;
+        }
+    }
+    return std::nullopt;
+}
+
+// A Chromium --app window's class carries the site host:
+// "brave-gemini.google.com__app-Default" -> "gemini.google.com". Empty when the
+// class is not a browser app window (a plain tab like "brave-browser", or any
+// other app), so the caller only trusts it for web apps.
+static std::string hostFromClass(const std::string& klass) {
+    static const std::vector<std::string> PREFIXES = {
+        "brave-", "google-chrome-", "chrome-", "chromium-", "microsoft-edge-", "vivaldi-", "opera-", "helium-",
+    };
+    const auto k = lower(klass);
+    std::string rest;
+    for (const auto& p : PREFIXES) {
+        if (k.rfind(p, 0) == 0) {
+            rest = k.substr(p.size());
+            break;
+        }
+    }
+    if (rest.empty())
+        return "";
+
+    // Up to the first character a host can't hold; the URL path and profile
+    // parts of the class follow an underscore.
+    const auto end  = rest.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789.-");
+    auto       host = rest.substr(0, end == std::string::npos ? rest.size() : end);
+    if (host.rfind("www.", 0) == 0)
+        host = host.substr(4);
+    return host.find('.') != std::string::npos ? host : "";
+}
+
+// The host of the first http(s) URL in a desktop file's Exec, e.g.
+// `omarchy-launch-webapp "https://gemini.google.com/app"` -> "gemini.google.com".
+static std::string hostFromExec(const std::string& exec) {
+    const auto e      = lower(exec);
+    auto       at     = e.find("https://");
+    size_t     len    = 8;
+    const auto httpAt = e.find("http://");
+    if (httpAt != std::string::npos && (at == std::string::npos || httpAt < at)) {
+        at  = httpAt;
+        len = 7;
+    }
+    if (at == std::string::npos)
+        return "";
+
+    at += len;
+    const auto end  = e.find_first_of("/\"' \t", at);
+    auto       host = e.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    if (host.rfind("www.", 0) == 0)
+        host = host.substr(4);
+    return host;
+}
+
+// The Icon= of the desktop file that best fits a window: a StartupWMClass
+// match names the app directly; failing that -- apps like the Omarchy shell
+// widgets all share one generic class, so the class says little -- the window
+// title matched against the desktop name; failing that the desktop file or
+// program named after the class.
+static std::optional<std::string> desktopIconName(const std::string& klass, const std::string& title) {
+    const auto      wantClass = lower(klass);
+    const auto      wantTitle = lower(trim(title));
+    const auto      classHost = hostFromClass(klass);
+    std::error_code ec;
+
+    std::optional<std::string> byTitle, byHost, byClass;
+    for (const auto& d : dataDirs()) {
+        const auto adir = d + "/applications";
+        if (!std::filesystem::is_directory(adir, ec))
+            continue;
+
+        for (const auto& entry : std::filesystem::directory_iterator(adir, ec)) {
+            if (entry.path().extension() != ".desktop")
+                continue;
+
+            std::ifstream f(entry.path());
+            std::string   line, icon, name, wmclass, exec;
+            while (std::getline(f, line)) {
+                if (line.rfind("Icon=", 0) == 0)
+                    icon = trim(line.substr(5));
+                else if (line.rfind("Name=", 0) == 0)
+                    name = trim(line.substr(5));
+                else if (line.rfind("StartupWMClass=", 0) == 0)
+                    wmclass = trim(line.substr(15));
+                else if (line.rfind("Exec=", 0) == 0)
+                    exec = trim(line.substr(5));
+            }
+            if (icon.empty())
+                continue;
+
+            if (!wmclass.empty() && lower(wmclass) == wantClass)
+                return icon;
+
+            if (!byTitle && !wantTitle.empty() && !name.empty() && lower(name) == wantTitle)
+                byTitle = icon;
+
+            auto exe = exec.substr(0, exec.find(' '));
+            exe      = exe.substr(exe.find_last_of('/') + 1);
+            if (!byClass && (lower(entry.path().stem().string()) == wantClass || (!exe.empty() && lower(exe) == wantClass)))
+                byClass = icon;
+
+            if (!byHost && !classHost.empty()) {
+                const auto execHost = hostFromExec(exec);
+                if (!execHost.empty() && execHost == classHost)
+                    byHost = icon;
+            }
+        }
+    }
+    return byTitle ? byTitle : (byHost ? byHost : byClass);
+}
+
+static std::string iconForWindow(const std::string& klass, const std::string& title) {
+    const auto key = klass + "\n" + title;
+    const auto it  = g_classIcon.find(key);
+    if (it != g_classIcon.end())
+        return it->second;
+
+    if (g_classIcon.size() > 512) // titles can churn; don't grow without bound
+        g_classIcon.clear();
+
+    std::string path;
+    if (const auto name = desktopIconName(klass, title); name)
+        if (const auto file = iconFile(*name); file)
+            path = *file;
+
+    g_classIcon[key] = path;
+    return path;
+}
+
+static SP<Render::ITexture> iconTexture(const std::string& path) {
+    const auto it = g_iconTex.find(path);
+    if (it != g_iconTex.end())
+        return it->second;
+
+    SP<Render::ITexture> tex;
+    Hyprgraphics::CImage img(path, {256, 256}); // the size only matters for SVG
+    if (img.success() && img.cairoSurface())
+        tex = g_pHyprRenderer->createTexture(img.cairoSurface()->cairo());
+
+    g_iconTex[path] = tex; // cache failures too, so we don't retry every frame
+    return tex;
+}
+
+static void onRenderStage(eRenderStage stage) {
+    if (stage != RENDER_POST_WINDOW)
+        return;
+
+    const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    if (!window || !fullSize(window.get()))
+        return;
+
+    const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!monitor)
+        return;
+
+    const auto klass = !window->m_class.empty() ? window->m_class : window->m_initialClass;
+    const auto title = !window->m_title.empty() ? window->m_title : window->m_initialTitle;
+    if (klass.empty() && title.empty())
+        return;
+
+    const auto tex = iconTexture(iconForWindow(klass, title));
+    if (!tex)
+        return;
+
+    const auto box  = window->getWindowMainSurfaceBox();
+    const auto size = std::clamp(box.w * ICON_SHARE, ICON_MIN, ICON_MAX);
+
+    CTexPassElement::SRenderData data;
+    data.tex = tex;
+    data.box = CBox{box.x - monitor->m_position.x + ICON_INSET, box.y - monitor->m_position.y + box.h - size - ICON_INSET, size, size};
+    g_pHyprRenderer->addPassElement(makeUnique<CTexPassElement>(std::move(data)));
+}
+
 // --- Lua API: hl.plugin.stagethumbs.* -------------------------------------
 
 static uintptr_t addressArg(lua_State* L, int idx) {
@@ -334,16 +648,20 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "loaded", luaLoaded);
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "watch_alt", luaWatchAlt);
 
-    g_keyListener = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
+    g_keyListener   = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
+    g_stageListener = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) { onRenderStage(stage); });
 
-    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.3"};
+    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.5"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
     g_keyListener.reset();
+    g_stageListener.reset();
     g_hoverReport.reset(); // drop pending reports before our code is unloaded
     g_altReport.reset();
     g_full.clear();
+    g_classIcon.clear();
+    g_iconTex.clear();
     for (auto* h : {g_hkReportSize, g_hkUV, g_hkTexBox, g_hkFocus, g_hkMotion, g_hkDamage}) {
         if (h)
             HyprlandAPI::removeFunctionHook(PHANDLE, h);
