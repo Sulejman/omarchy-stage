@@ -82,13 +82,16 @@ local function guarded(fn)
 end
 
 -- Focus changes that mean "put this window in the middle". Keyboard
--- navigation (SUPER + arrows), hover, workspace switches and windows closing
--- don't count; SUPER + Z promotes explicitly.
+-- navigation (SUPER + arrows), hover and workspace switches don't count;
+-- SUPER + Z promotes explicitly. A tiled window closing does count: Hyprland
+-- hands focus to the window you were in, and the layout has already run by
+-- then with no window to promote, so this is what puts it back in the middle.
 local DELIBERATE = {
   [3] = true, -- focus dispatcher (window switchers, notifications)
   [5] = true, -- click
   [8] = true, -- switch to window (soft)
   [9] = true, -- switch to window (hard)
+  [13] = true, -- unmap of a tiled window (closed; focus handed over)
   [16] = true, -- new window
 }
 
@@ -135,8 +138,8 @@ local function sync(list, windows, focused_id)
   end
 
   -- A window that left: the last thumbnail fills its slot, so at most one
-  -- other window moves. If it was the middle one, the next window in the
-  -- Alt+Tab order takes the middle.
+  -- other window moves. If it was the middle one, the window Hyprland focused
+  -- takes the middle, else the next window in opening order.
   local i = 1
   while i <= #list do
     local id = list[i]
@@ -152,11 +155,17 @@ local function sync(list, windows, focused_id)
       if #rest == 0 then
         table.remove(list, 1)
       else
-        local successor = sequence(rest)[1]
-        for _, cand in ipairs(sequence(rest)) do
-          if cand > id then
-            successor = cand
-            break
+        -- The focus event that says which window to promote arrives after the
+        -- layout's own pass on a close, so this is often still nil here; the
+        -- promoted window then comes from DELIBERATE[13] instead.
+        local successor = focused_id
+        if not successor or not index_of(rest, successor) then
+          successor = sequence(rest)[1]
+          for _, cand in ipairs(sequence(rest)) do
+            if cand > id then
+              successor = cand
+              break
+            end
           end
         end
         local j = index_of(list, successor)
