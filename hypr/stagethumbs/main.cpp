@@ -19,9 +19,16 @@
 #define WLR_USE_UNSTABLE
 
 #include <hyprland/src/plugins/PluginAPI.hpp>
+#if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
+#define STAGE_HYPRLAND_057
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WaylandBackend.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#else
 #include <hyprland/src/desktop/view/Window.hpp>
-#include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
+#endif
+#include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/supplementary/WorkspaceAlgoMatcher.hpp>
@@ -78,17 +85,26 @@ static std::optional<Vector2D> fullSize(const CWindow* w) {
     if (it == g_full.end())
         return std::nullopt;
 
+#ifdef STAGE_HYPRLAND_057
+    if (w->isFloating() || w->backend().isX11())
+#else
     if (w->m_isFloating || w->m_isX11)
+#endif
         return std::nullopt;
 
     const auto& ws = w->m_workspace;
-    if (!ws || !ws->m_space || !ws->m_space->algorithm() || !ws->m_space->algorithm()->tiledAlgo())
+#ifdef STAGE_HYPRLAND_057
+    const auto space = ws ? ws->space() : nullptr;
+#else
+    const auto space = ws ? ws->m_space : nullptr;
+#endif
+    if (!space || !space->algorithm() || !space->algorithm()->tiledAlgo())
         return std::nullopt;
 
     if (Fullscreen::controller()->isFullscreen(w->m_self.lock()))
         return std::nullopt;
 
-    if (Layout::Supplementary::algoMatcher()->getNameForTiledAlgo(ws->m_space->algorithm()->tiledAlgo().get()) != LAYOUT)
+    if (Layout::Supplementary::algoMatcher()->getNameForTiledAlgo(space->algorithm()->tiledAlgo().get()) != LAYOUT)
         return std::nullopt;
 
     return it->second;
@@ -116,6 +132,21 @@ static std::optional<Vector2D> shrink(const CWindow* w) {
 
 // --- size reported to the app ----------------------------------------------
 
+#ifdef STAGE_HYPRLAND_057
+// 0.57 moved client-size negotiation from CWindow to its backend. Override
+// only Wayland configure sizes; keep the thumbnail's layout geometry intact.
+using configureFn = void (*)(Desktop::View::CWaylandBackend*, const CBox&, PHLMONITOR, bool);
+static void hkConfigure(Desktop::View::CWaylandBackend* self, const CBox& logicalBox, PHLMONITOR monitor, bool force) {
+    CBox box = logicalBox;
+    if (const auto window = windowOf(self->surface())) {
+        if (const auto full = fullSize(window.get())) {
+            box.width = full->x;
+            box.height = full->y;
+        }
+    }
+    ((configureFn)g_hkReportSize->m_original)(self, box, monitor, force);
+}
+#else
 typedef Vector2D (*realToReportSizeFn)(CWindow*);
 static Vector2D hkRealToReportSize(CWindow* self) {
     if (const auto full = fullSize(self))
@@ -123,15 +154,25 @@ static Vector2D hkRealToReportSize(CWindow* self) {
     return ((realToReportSizeFn)g_hkReportSize->m_original)(self);
 }
 
+#endif
+
 // --- drawing ---------------------------------------------------------------
 
 // Hyprland crops a buffer that is larger than its window instead of scaling
 // it. For thumbnails, show the whole buffer (respecting any viewport crop the
 // app asked for) so it gets squeezed into the box.
+#ifdef STAGE_HYPRLAND_057
+using calcUVFn = void (*)(Render::IElementRenderer*, Render::CRenderContext&, PHLWINDOW, SP<CWLSurfaceResource>, PHLMONITOR, bool, const Vector2D&, const Vector2D&, bool);
+static void hkCalculateUVForSurface(Render::IElementRenderer* self, Render::CRenderContext& ctx, PHLWINDOW window, SP<CWLSurfaceResource> surface, PHLMONITOR monitor,
+                                    bool main, const Vector2D& projSize, const Vector2D& projSizeUnscaled, bool fixMisaligned) {
+    ((calcUVFn)g_hkUV->m_original)(self, ctx, window, surface, monitor, main, projSize, projSizeUnscaled, fixMisaligned);
+#else
 typedef void (*calcUVFn)(Render::IElementRenderer*, PHLWINDOW, SP<CWLSurfaceResource>, PHLMONITOR, bool, const Vector2D&, const Vector2D&, bool);
 static void hkCalculateUVForSurface(Render::IElementRenderer* self, PHLWINDOW window, SP<CWLSurfaceResource> surface, PHLMONITOR monitor, bool main, const Vector2D& projSize,
                                     const Vector2D& projSizeUnscaled, bool fixMisaligned) {
     ((calcUVFn)g_hkUV->m_original)(self, window, surface, monitor, main, projSize, projSizeUnscaled, fixMisaligned);
+
+#endif
 
     if (!window || !surface || !fullSize(window.get()))
         return;
@@ -146,7 +187,11 @@ static void hkCalculateUVForSurface(Render::IElementRenderer* self, PHLWINDOW wi
         }
     }
 
+#ifdef STAGE_HYPRLAND_057
+    auto& rd = ctx.m_data;
+#else
     auto& rd = g_pHyprRenderer->m_renderData;
+#endif
     if (uvTL == Vector2D{0, 0} && uvBR == Vector2D{1, 1}) {
         rd.primarySurfaceUVTopLeft     = {-1, -1};
         rd.primarySurfaceUVBottomRight = {-1, -1};
@@ -248,8 +293,8 @@ static void onKey(const IKeyboard::SKeyEvent& e) {
 
 // Damage arrives in the app's full-size coordinates; just redraw the whole
 // (small) thumbnail instead.
-typedef void (*damageSurfaceFn)(void*, SP<CWLSurfaceResource>, double, double, double);
-static void hkDamageSurface(void* self, SP<CWLSurfaceResource> surface, double x, double y, double scale) {
+typedef void (*damageSurfaceFn)(Render::IHyprRenderer*, SP<CWLSurfaceResource>, double, double, double);
+static void hkDamageSurface(Render::IHyprRenderer* self, SP<CWLSurfaceResource> surface, double x, double y, double scale) {
     const auto window = windowOf(surface);
     if (window && fullSize(window.get())) {
         g_pHyprRenderer->damageWindow(window);
@@ -322,7 +367,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (__hyprland_api_get_hash() != std::string{__hyprland_api_get_client_hash()})
         throw std::runtime_error("stagethumbs: built for a different Hyprland version, rebuild it (make -C ~/.config/hypr/stagethumbs)");
 
+#ifdef STAGE_HYPRLAND_057
+    g_hkReportSize = hook("configure", "Desktop::View::CWaylandBackend::configure(", (void*)&hkConfigure);
+#else
     g_hkReportSize = hook("realToReportSize", "CWindow::realToReportSize", (void*)&hkRealToReportSize);
+#endif
     g_hkUV         = hook("calculateUVForSurface", "IElementRenderer::calculateUVForSurface", (void*)&hkCalculateUVForSurface);
     g_hkTexBox     = hook("getTexBox", "CSurfacePassElement::getTexBox", (void*)&hkGetTexBox);
     g_hkFocus      = hook("setPointerFocus", "CSeatManager::setPointerFocus", (void*)&hkSetPointerFocus);
