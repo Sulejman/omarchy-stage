@@ -9,4 +9,7 @@ stagethumbs.so: main.cpp
 clean:
 	rm -f stagethumbs.so
 
-.PHONY: clean
+check:
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -fsyntax-only tests/hook-abi.cpp
+
+.PHONY: clean check
