@@ -664,6 +664,25 @@ end))
 
 local M = {}
 
+-- A thumbnail click is consumed by stagethumbs. Promote explicitly even when
+-- keyboard navigation had already focused it (there is no new focus event).
+function M.activate(address)
+  local ws = hl.get_active_workspace()
+  if not is_stage(ws) then
+    return
+  end
+  for _, w in ipairs(tiled_windows(ws)) do
+    if w.address == address then
+      navigating = true
+      hl.dispatch(hl.dsp.focus({ window = w }))
+      navigating = false
+      swap_and_flash(ws, slots_for(ws.id), w.stable_id)
+      relayout_soon()
+      return
+    end
+  end
+end
+
 -- Swap the focused thumbnail into the middle.
 function M.promote()
   local w = hl.get_active_window()

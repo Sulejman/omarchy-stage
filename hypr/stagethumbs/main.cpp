@@ -5,7 +5,8 @@
 // for windows the layout marks with hl.plugin.stagethumbs.set(), this plugin:
 //   - keeps telling the app it has its full (middle-of-screen) size,
 //   - draws that full-size content scaled down into the small box,
-//   - scales pointer coordinates so clicks land where they appear,
+//   - scales pointer coordinates so hover feedback tracks the miniature,
+//   - consumes thumbnail clicks so they only bring the window to the middle,
 //   - redraws the whole thumbnail whenever the app updates,
 //   - tells the layout which thumbnail the pointer is over, so it can
 //     highlight it (Hyprland has no hover event for Lua),
@@ -58,6 +59,7 @@ static CFunctionHook*                          g_hkUV         = nullptr;
 static CFunctionHook*                          g_hkTexBox     = nullptr;
 static CFunctionHook*                          g_hkFocus      = nullptr;
 static CFunctionHook*                          g_hkMotion     = nullptr;
+static CFunctionHook*                          g_hkButton     = nullptr;
 static CFunctionHook*                          g_hkDamage     = nullptr;
 
 // thumbnail under the pointer (0: none), and the pending report of it to Lua
@@ -68,9 +70,12 @@ static UP<SEventLoopDoLaterLock>               g_hoverReport;
 static bool                                    g_watchAlt = false;
 static UP<SEventLoopDoLaterLock>               g_altReport;
 static CHyprSignalListener                     g_keyListener;
+static CHyprSignalListener                     g_buttonListener;
+static std::unordered_map<uint32_t, uintptr_t>  g_thumbnailButtons;
+static UP<SEventLoopDoLaterLock>                g_clickReport;
 
 // The full size of a window currently shown as a thumbnail, if it is one.
-static std::optional<Vector2D> fullSize(const CWindow* w) {
+static std::optional<Vector2D> thumbnailSize(const CWindow* w) {
     if (!w || g_full.empty())
         return std::nullopt;
 
@@ -78,7 +83,7 @@ static std::optional<Vector2D> fullSize(const CWindow* w) {
     if (it == g_full.end())
         return std::nullopt;
 
-    if (w->m_isFloating || w->m_isX11)
+    if (w->m_isFloating)
         return std::nullopt;
 
     const auto& ws = w->m_workspace;
@@ -92,6 +97,12 @@ static std::optional<Vector2D> fullSize(const CWindow* w) {
         return std::nullopt;
 
     return it->second;
+}
+
+static std::optional<Vector2D> fullSize(const CWindow* w) {
+    if (!w || w->m_isX11)
+        return std::nullopt;
+    return thumbnailSize(w);
 }
 
 static PHLWINDOW windowOf(SP<CWLSurfaceResource> surface) {
@@ -222,6 +233,38 @@ static void hkSendPointerMotion(CSeatManager* self, uint32_t timeMs, const Vecto
     ((sendPointerMotionFn)g_hkMotion->m_original)(self, timeMs, toFull(self->m_state.pointerFocus.lock(), local));
 }
 
+// Capture thumbnail status before Hyprland changes focus or Lua recalculates
+// the layout. Leave the input event alone so compositor mouse bindings still
+// work. Only swallow it if Hyprland actually tries to deliver it to an app.
+static void onButton(const IPointer::SButtonEvent& e) {
+    if (e.state != WL_POINTER_BUTTON_STATE_PRESSED)
+        return;
+    g_thumbnailButtons.erase(e.button);
+    const auto window = windowOf(g_pSeatManager->m_state.pointerFocus.lock());
+    if (window && thumbnailSize(window.get()))
+        g_thumbnailButtons[e.button] = reinterpret_cast<uintptr_t>(window.get());
+}
+
+typedef void (*sendPointerButtonFn)(CSeatManager*, uint32_t, uint32_t, wl_pointer_button_state);
+static void hkSendPointerButton(CSeatManager* self, uint32_t timeMs, uint32_t button, wl_pointer_button_state state) {
+    const auto it = g_thumbnailButtons.find(button);
+    if (it == g_thumbnailButtons.end()) {
+        ((sendPointerButtonFn)g_hkButton->m_original)(self, timeMs, button, state);
+        return;
+    }
+    if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+        // The window may already be centered, or the pointer over another app.
+        // Neither should receive a release for the press we consumed.
+        g_thumbnailButtons.erase(it);
+        return;
+    }
+    const auto addr = it->second;
+    g_clickReport = g_pEventLoopManager->doLaterLock([addr] {
+        HyprlandAPI::invokeHyprctlCommand("eval", std::format(
+            "local s = _G.omarchy_stage; if s and s.activate then s.activate('0x{:x}') end", addr));
+    });
+}
+
 // --- keyboard --------------------------------------------------------------
 
 // ALT by hardware key, or by what the keymap makes of the key (remapped keys,
@@ -327,6 +370,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_hkTexBox     = hook("getTexBox", "CSurfacePassElement::getTexBox", (void*)&hkGetTexBox);
     g_hkFocus      = hook("setPointerFocus", "CSeatManager::setPointerFocus", (void*)&hkSetPointerFocus);
     g_hkMotion     = hook("sendPointerMotion", "CSeatManager::sendPointerMotion", (void*)&hkSendPointerMotion);
+    g_hkButton     = hook("sendPointerButton", "CSeatManager::sendPointerButton", (void*)&hkSendPointerButton);
     g_hkDamage     = hook("damageSurface", "::damageSurface(", (void*)&hkDamageSurface);
 
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "set", luaSet);
@@ -335,16 +379,20 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addLuaFunction(PHANDLE, "stagethumbs", "watch_alt", luaWatchAlt);
 
     g_keyListener = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
+    g_buttonListener = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent e, Event::SCallbackInfo&) { onButton(e); });
 
-    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.3"};
+    return {"stagethumbs", "True miniatures for the Lua stage layout", "sulejman", "0.4"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
     g_keyListener.reset();
+    g_buttonListener.reset();
+    g_clickReport.reset();
+    g_thumbnailButtons.clear();
     g_hoverReport.reset(); // drop pending reports before our code is unloaded
     g_altReport.reset();
     g_full.clear();
-    for (auto* h : {g_hkReportSize, g_hkUV, g_hkTexBox, g_hkFocus, g_hkMotion, g_hkDamage}) {
+    for (auto* h : {g_hkReportSize, g_hkUV, g_hkTexBox, g_hkFocus, g_hkMotion, g_hkButton, g_hkDamage}) {
         if (h)
             HyprlandAPI::removeFunctionHook(PHANDLE, h);
     }
