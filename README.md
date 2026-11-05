@@ -25,7 +25,7 @@ keep Omarchy's normal bindings.
 | Key | Action |
 |---|---|
 | `SUPER + L` | Cycle the workspace layout: dwindle → scrolling → stage → dwindle |
-| Click a thumbnail | Swap it into the middle |
+| Click a thumbnail | Swap it into the middle (with stagethumbs, the click is consumed) |
 | `ALT + TAB` / `ALT + SHIFT + TAB` | Switcher: hold `ALT` and tap `TAB` to move the highlight across the thumbnails (the left side first, inner column top to bottom, then the right side; `SHIFT` goes back), release `ALT` to open the highlighted one |
 | `SUPER + arrows` | Move focus without moving anything (you can type into a thumbnail) |
 | `SUPER + Z` | Swap the focused thumbnail into the middle |
@@ -81,8 +81,9 @@ and reloads Hyprland. Update with `git pull && ./install.sh`.
 Without the thumbnails plugin, a thumbnail is the real window resized to a
 small box, so apps re-lay themselves out for that size. The optional
 `stagethumbs` Hyprland plugin instead keeps telling the app it has its full
-middle-of-screen size and draws that content scaled down. Clicks are scaled
-too, so they land where they appear.
+middle-of-screen size and draws that content scaled down. Clicking a thumbnail
+only brings it into the middle; neither the button press nor its release is
+sent to the app. Click again in the centered window to interact with it.
 
 Hyprland plugins must be built against the exact Hyprland version that's
 running, so both install methods rebuild it when the `hyprland` package
