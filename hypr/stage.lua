@@ -92,6 +92,19 @@ local DELIBERATE = {
   [16] = true, -- new window
 }
 
+-- 0.56 reports enum ordinals; 0.57 changed them to a bitmask. In particular,
+-- clicks include a down/up flag as well as CLICK, so exact equality misses
+-- them. Select the format by version: the old and new values overlap.
+local major, minor = hl.version():match("^v?(%d+)%.(%d+)")
+local focus_flags = major and (tonumber(major) > 0 or tonumber(minor) >= 57)
+local deliberate_mask = (1 << 2) | (1 << 4) | (1 << 8) | (1 << 9) | (1 << 16)
+local function deliberate_focus(reason)
+  if focus_flags then
+    return type(reason) == "number" and (reason & deliberate_mask) ~= 0
+  end
+  return DELIBERATE[reason] == true
+end
+
 -- workspace id -> list of window stable_ids. [1] is the window in the
 -- middle; [2], [3], ... are thumbnail slots (alternating left and right,
 -- inner column first). Windows only change slot when swapped.
@@ -620,7 +633,7 @@ end
 local navigating = false
 
 hl.on("window.active", guarded(function(window, reason)
-  if navigating or not window or not window.stable_id or not DELIBERATE[reason] then
+  if navigating or not window or not window.stable_id or not deliberate_focus(reason) then
     return
   end
   if not is_stage(window.workspace) or window.floating then
