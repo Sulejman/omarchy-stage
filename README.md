@@ -8,6 +8,11 @@ right. Thumbnails are as big as the space allows: a few windows get one column
 of large thumbnails, and more columns appear only when a column gets crowded,
 each one further out a bit smaller.
 
+Prefer the thumbnails out of the way? `cfg.thumb_side = "left"` (or `"right"`)
+keeps them all on that edge in a single column, and the middle window takes the
+whole rest of the screen, so narrowing it stops where the thumbnails stop
+getting bigger.
+
 Thumbnails keep their spot. Bringing a window into the middle swaps it with
 the current middle window, and nothing else moves.
 
@@ -92,9 +97,10 @@ folder, or `~/.config/hypr/stagethumbs/` for a manual install).
 
 ## Tuning
 
-The `cfg` table at the top of `hypr/stage.lua` holds the knobs: middle window
-aspect and min/max share of the screen, thumbnail opacity, the selection
-border width and how long the swap highlight lasts. With the plugin, edit
+The `cfg` table at the top of `hypr/stage.lua` holds the knobs: which side(s)
+the thumbnails are on, middle window aspect and min/max share of the screen,
+thumbnail opacity, the selection border width and how long the swap highlight
+lasts. With the plugin, edit
 `~/.config/omarchy/plugins/io.github.sulejman.stage/hypr/stage.lua` and run
 `hyprctl reload`. With a manual install, edit `~/.config/hypr/stage.lua`
 (Hyprland reloads on save). Updates replace the file, so keep a note of your
